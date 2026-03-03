@@ -1,4 +1,9 @@
+# Disclaimer
+This project is for educational and archival purposes. 
+
 # Gen 3 Shiny Odds CLI Patcher
+It's a small script I made a while ago as practice.
+Works with European and USA versions only, haven't checked JP at all, feel free to fork and add it!
 
 Safe shiny-odds patcher for Pokemon Gen 3 GBA ROMs:
 - FireRed
