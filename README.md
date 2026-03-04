@@ -115,4 +115,3 @@ Example values:
 
 ## License
 Distributed under the MIT License. See `LICENSE` for more information.
->>>>>>> 7e40c940f534d4fc5881bd40314f738034d1f656
