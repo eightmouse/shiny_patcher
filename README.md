@@ -78,3 +78,20 @@ This tool converts `1 in N` to the nearest threshold with:
 python --version
 python shiny_patcher.py --help
 ```
+
+## Drag-and-drop launcher (Windows)
+
+Use [patch_drag_drop.bat](patch_drag_drop.bat) for simple usage:
+- Drag one or more `.gba` ROM files onto `patch_drag_drop.bat`
+- The launcher reads odds from [patcher_config.ini](patcher_config.ini)
+- It calls `shiny_patcher.py` and creates patched ROM output files
+
+Edit this line in `patcher_config.ini` to change odds:
+```ini
+odds=4096
+```
+
+Example values:
+- `odds=8192` (vanilla)
+- `odds=4096`
+- `odds=2048`
