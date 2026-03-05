@@ -60,8 +60,8 @@ Default output naming:
 - `auto`: chooses `native` when possible, otherwise `reroll`.
 
 PKHeX compatibility note:
-- `native`: PKHeX-compatible shiny logic.
-- `reroll`/`auto` at high rates: game can show shiny, but PKHeX may not mark those Pokemon as shiny.
+- Only vanilla shiny logic (`1/8192`, effective threshold `8`, 16-bit check) is fully PKHeX-canonical.
+- Any boosted odds mode can show in-game shiny Pokemon that PKHeX will not mark as shiny.
 
 Patch summary reports:
 - requested mode
