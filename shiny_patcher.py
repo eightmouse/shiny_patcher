@@ -695,17 +695,17 @@ def build_canonical_create_mon_hook(
     emit_hw(0x2907)  # cmp r1,#7
     emit_b_cond(9, "done")  # bls done (already shiny)
 
-    emit_hw(0x0FE8)  # lsr r0,r5,#31 (r5 high-bit marks initialized counter state)
+    emit_hw(0x0FE0)  # lsr r0,r4,#31 (r4 high-bit marks initialized counter state)
     emit_hw(0x2800)  # cmp r0,#0
     emit_b_cond(1, "counter_ready")  # bne counter_ready
-    emit_ldr_literal(5, "counter_init")
+    emit_ldr_literal(4, "counter_init")
 
     mark("counter_ready")
-    emit_hw(0x1C28)  # adds r0,r5,#0
+    emit_hw(0x1C20)  # adds r0,r4,#0
     emit_hw(0x0040)  # lsls r0,r0,#1 (drop marker bit, keep remaining count)
     emit_hw(0x2800)  # cmp r0,#0
     emit_b_cond(0, "done")  # beq done (no retries left)
-    emit_hw(0x3D01)  # subs r5,#1
+    emit_hw(0x3C01)  # subs r4,#1
     emit_ldr_literal(0, "retry_addr")
     emit_hw(0x4700)  # bx r0 (jump to CreateMon arg-setup block and call CreateBoxMon again)
 
@@ -1109,5 +1109,6 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
 
