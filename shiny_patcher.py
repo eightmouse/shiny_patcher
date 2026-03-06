@@ -52,6 +52,19 @@ ROM_SPECS: tuple[RomSpec, ...] = (
         ),
     ),
     RomSpec(
+        name="Pokemon Ruby Version (USA, Europe) (Rev 2)",
+        game_code="AXVE",
+        revision="2",
+        crc32=0xAEAC73E6,
+        patch_sites=(
+            PatchSite(0x03A8A2, 0x07, "odds_minus_one"),
+            PatchSite(0x040988, 0x07, "odds_minus_one"),
+            PatchSite(0x0409FE, 0x07, "odds_minus_one"),
+            PatchSite(0x040D14, 0x07, "odds_minus_one"),
+            PatchSite(0x14189A, 0x07, "odds_minus_one"),
+        ),
+    ),
+    RomSpec(
         name="Pokemon Sapphire Version (USA, Europe)",
         game_code="AXPE",
         revision="0",
@@ -69,6 +82,19 @@ ROM_SPECS: tuple[RomSpec, ...] = (
         game_code="AXPE",
         revision="1",
         crc32=0xBAFEDAE5,
+        patch_sites=(
+            PatchSite(0x03A8A2, 0x07, "odds_minus_one"),
+            PatchSite(0x040988, 0x07, "odds_minus_one"),
+            PatchSite(0x0409FE, 0x07, "odds_minus_one"),
+            PatchSite(0x040D14, 0x07, "odds_minus_one"),
+            PatchSite(0x14189A, 0x07, "odds_minus_one"),
+        ),
+    ),
+    RomSpec(
+        name="Pokemon Sapphire Version (USA, Europe) (Rev 2)",
+        game_code="AXPE",
+        revision="2",
+        crc32=0x9CC4410E,
         patch_sites=(
             PatchSite(0x03A8A2, 0x07, "odds_minus_one"),
             PatchSite(0x040988, 0x07, "odds_minus_one"),
@@ -157,6 +183,8 @@ BASE_SHINY_NUMERATOR = 65536
 BASE_THRESHOLD = 8
 MAX_NATIVE_THRESHOLD = 255
 MAX_CANONICAL_REROLL_ATTEMPTS = 1024
+THUMB_BL_MIN_DELTA = -0x400000
+THUMB_BL_MAX_DELTA = 0x3FFFFE
 
 
 @dataclass(frozen=True)
@@ -451,20 +479,14 @@ def decode_thumb_bl_target(data: bytearray, offset: int) -> int:
         raise ValueError(f"BL decode offset out of range: 0x{offset:06X}")
     hw1 = int.from_bytes(data[offset : offset + 2], "little")
     hw2 = int.from_bytes(data[offset + 2 : offset + 4], "little")
-    if (hw1 & 0xF800) != 0xF000 or (hw2 & 0xD000) != 0xD000:
-        raise ValueError(f"Expected BL at 0x{offset:06X}, found 0x{hw1:04X} 0x{hw2:04X}.")
+    # ARMv4T Thumb BL pair: 11110xxxxxxxxxxx + 11111xxxxxxxxxxx
+    if (hw1 & 0xF800) != 0xF000 or (hw2 & 0xF800) != 0xF800:
+        raise ValueError(f"Expected Thumb BL at 0x{offset:06X}, found 0x{hw1:04X} 0x{hw2:04X}.")
 
-    s = (hw1 >> 10) & 1
-    imm10 = hw1 & 0x03FF
-    j1 = (hw2 >> 13) & 1
-    j2 = (hw2 >> 11) & 1
-    imm11 = hw2 & 0x07FF
-    i1 = (~(j1 ^ s)) & 1
-    i2 = (~(j2 ^ s)) & 1
-    imm25 = (s << 24) | (i1 << 23) | (i2 << 22) | (imm10 << 12) | (imm11 << 1)
-    if s:
-        imm25 |= ~((1 << 25) - 1)
-    return (offset + 4 + imm25) & 0xFFFFFFFF
+    imm23 = ((hw1 & 0x07FF) << 12) | ((hw2 & 0x07FF) << 1)
+    if hw1 & 0x0400:
+        imm23 -= (1 << 23)
+    return (offset + 4 + imm23) & 0xFFFFFFFF
 
 
 def encode_thumb_bl(from_addr: int, target_addr: int) -> bytes:
@@ -473,22 +495,16 @@ def encode_thumb_bl(from_addr: int, target_addr: int) -> bytes:
         raise ValueError(
             f"BL target alignment error: 0x{from_addr:06X} -> 0x{target_addr:06X}"
         )
-    if delta < -(1 << 24) or delta > ((1 << 24) - 2):
+    if delta < THUMB_BL_MIN_DELTA or delta > THUMB_BL_MAX_DELTA:
         raise ValueError(
-            f"BL out of range: 0x{from_addr:06X} -> 0x{target_addr:06X}"
+            f"Thumb BL out of range: 0x{from_addr:06X} -> 0x{target_addr:06X}"
         )
 
-    imm25 = delta & ((1 << 25) - 1)
-    s = (imm25 >> 24) & 1
-    i1 = (imm25 >> 23) & 1
-    i2 = (imm25 >> 22) & 1
-    imm10 = (imm25 >> 12) & 0x03FF
-    imm11 = (imm25 >> 1) & 0x07FF
-    j1 = (~i1 ^ s) & 1
-    j2 = (~i2 ^ s) & 1
-
-    hw1 = 0xF000 | (s << 10) | imm10
-    hw2 = 0xD000 | (j1 << 13) | (j2 << 11) | imm11
+    imm23 = delta & ((1 << 23) - 1)
+    hi = (imm23 >> 12) & 0x07FF
+    lo = (imm23 >> 1) & 0x07FF
+    hw1 = 0xF000 | hi
+    hw2 = 0xF800 | lo
     return hw1.to_bytes(2, "little") + hw2.to_bytes(2, "little")
 
 
@@ -497,6 +513,96 @@ def is_thumb_add_imm0_into_r0(instr: int) -> bool:
     imm3 = (instr >> 6) & 0x07
     rd = instr & 0x07
     return op == 0x03 and imm3 == 0 and rd == 0
+
+
+def find_code_cave_near(data: bytearray, branch_from: int, required_size: int) -> int:
+    if required_size <= 0:
+        raise ValueError("Internal error: required code cave size must be positive.")
+    if required_size > len(data):
+        raise ValueError("ROM too small for canonical reroll hook payload.")
+
+    low = max(0, branch_from + THUMB_BL_MIN_DELTA)
+    high = min(len(data) - required_size, branch_from + THUMB_BL_MAX_DELTA)
+    low = (low + 3) & ~0x3
+    high &= ~0x3
+    if high < low:
+        raise ValueError("No reachable code cave range for canonical reroll hook.")
+
+    pad_ff = bytes([0xFF]) * required_size
+    pad_00 = bytes([0x00]) * required_size
+
+    for off in range(high, low - 1, -4):
+        block = bytes(data[off : off + required_size])
+        if block == pad_ff or block == pad_00:
+            return off
+
+    for off in range(high, low - 1, -4):
+        block = data[off : off + required_size]
+        if all(b in (0x00, 0xFF) for b in block):
+            return off
+
+    raise ValueError(
+        f"Could not find a reachable blank code cave near 0x{branch_from:06X} "
+        f"(need {required_size} bytes)."
+    )
+
+
+def find_canonical_layout(data: bytearray, cmp_offset: int) -> tuple[int, int, int]:
+    field1_call = -1
+    set_data_target = -1
+
+    fwd_start = min(len(data) - 8, cmp_offset + 0x10)
+    fwd_end = min(len(data) - 8, cmp_offset + 0x80)
+    for off in range(fwd_start, fwd_end, 2):
+        # Look for: add r0, rX, #0 ; movs r1,#1 ; mov r2,r9 ; bl SetMonData
+        hw0 = read_halfword(data, off - 6) if off >= 6 else -1
+        hw1 = read_halfword(data, off - 4) if off >= 4 else -1
+        hw2 = read_halfword(data, off - 2) if off >= 2 else -1
+        if not is_thumb_add_imm0_into_r0(hw0):
+            continue
+        if hw1 != 0x2101 or hw2 != 0x464A:
+            continue
+        try:
+            target = decode_thumb_bl_target(data, off)
+        except ValueError:
+            continue
+        field1_call = off
+        set_data_target = target
+        break
+
+    if field1_call < 0:
+        raise ValueError(
+            f"Canonical reroll validation failed near 0x{cmp_offset:06X}: "
+            "could not locate OTID SetMonData callsite."
+        )
+
+    hook_callsite = field1_call - 6
+    if hook_callsite < 0:
+        raise ValueError("Canonical reroll validation failed: invalid callsite bounds.")
+
+    # Also verify the earlier personality SetMonData call exists and targets the same function.
+    field0_found = False
+    back_start = max(0, cmp_offset - 0x80)
+    back_end = min(len(data) - 6, cmp_offset)
+    for off in range(back_start, back_end, 2):
+        hw1 = read_halfword(data, off + 2)
+        if hw1 != 0x2100:
+            continue
+        try:
+            target = decode_thumb_bl_target(data, off + 4)
+        except ValueError:
+            continue
+        if target == set_data_target and is_thumb_add_imm0_into_r0(read_halfword(data, off)):
+            field0_found = True
+            break
+
+    if not field0_found:
+        raise ValueError(
+            f"Canonical reroll validation failed near 0x{cmp_offset:06X}: "
+            "could not verify personality SetMonData callsite."
+        )
+
+    return hook_callsite, field1_call, set_data_target
 
 
 def canonical_cmp_site(spec: RomSpec) -> PatchSite:
@@ -539,6 +645,7 @@ def encode_thumb_b(from_addr: int, target_addr: int) -> bytes:
 def build_canonical_reroll_hook(
     cave_offset: int,
     rng_target: int,
+    set_data_target: int,
     rerolls_remaining: int,
     orig_hw0: int,
     orig_hw1: int,
@@ -572,13 +679,14 @@ def build_canonical_reroll_hook(
         fixups.append(("b", pos, label, 0))
 
     emit_hw(0xB5F0)  # push {r4-r7,lr}
-    emit_hw(0x0016)  # mov r6,r2
+    emit_hw(0x464E)  # mov r6,r9
+    emit_hw(0x3E04)  # subs r6,#4 (personality local = OTID local - 4)
     emit_hw(0x6835)  # ldr r5,[r6]
+    emit_hw(0x4648)  # mov r0,r9
+    emit_hw(0x6803)  # ldr r3,[r0]
     emit_ldr_literal(4, "rerolls_lit")
 
     mark("check")
-    emit_hw(0x4648)  # mov r0,r9
-    emit_hw(0x6803)  # ldr r3,[r0]
     emit_hw(0x0C29)  # lsr r1,r5,#16
     emit_hw(0x4069)  # eor r1,r5
     emit_hw(0x0C18)  # lsr r0,r3,#16
@@ -602,6 +710,9 @@ def build_canonical_reroll_hook(
     mark("done")
     emit_hw(0x6035)  # str r5,[r6]
     emit_hw(0x0032)  # mov r2,r6
+    emit_hw(0x1C38)  # adds r0,r7,#0
+    emit_hw(0x2100)  # movs r1,#0 (personality field)
+    hook.extend(encode_thumb_bl(cur_addr(), set_data_target))
     emit_hw(orig_hw0)
     emit_hw(orig_hw1)
     emit_hw(0xBDF0)  # pop {r4-r7,pc}
@@ -640,18 +751,9 @@ def build_canonical_reroll_hook(
 def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list[str]:
     cmp_site = canonical_cmp_site(spec)
     cmp_offset = cmp_site.offset
-    hook_callsite = cmp_offset - 0x48
-    field0_call = hook_callsite + 4
-    field1_call = cmp_offset + 0x3A
     rng_call_1 = cmp_offset - 0x2E
     rng_call_2 = cmp_offset - 0x28
-    cave_offset = 0x00F00000
-
-    if hook_callsite - 2 < 0 or field0_call + 4 > len(data):
-        raise ValueError("ROM layout too small for canonical reroll hook patch.")
-
-    if cave_offset + 0x100 > len(data):
-        raise ValueError("ROM layout too small for canonical reroll code cave.")
+    hook_payload_size = 0x100
 
     cmp_hw = read_halfword(data, cmp_offset)
     if (cmp_hw & 0xFF00) != 0x2900:
@@ -660,12 +762,9 @@ def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list
             f"expected cmp Rx,#imm (0x29xx), found 0x{cmp_hw:04X}."
         )
 
-    pre_hw = read_halfword(data, hook_callsite - 2)
-    if (pre_hw & 0xFF00) != 0xAA00:
-        raise ValueError(
-            f"Canonical reroll validation failed at 0x{hook_callsite - 2:06X}: "
-            f"expected add r2,sp,#imm (0xAAxx), found 0x{pre_hw:04X}."
-        )
+    hook_callsite, field1_call, set_data_target = find_canonical_layout(data, cmp_offset)
+    if hook_callsite - 2 < 0 or field1_call + 4 > len(data):
+        raise ValueError("ROM layout too small for canonical reroll hook patch.")
 
     orig_hw0 = read_halfword(data, hook_callsite)
     orig_hw1 = read_halfword(data, hook_callsite + 2)
@@ -674,18 +773,17 @@ def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list
             f"Canonical reroll validation failed at 0x{hook_callsite:06X}: "
             f"expected add r0,Rx,#0 call-setup opcode, found 0x{orig_hw0:04X}."
         )
-    if orig_hw1 != 0x2100:
+    if orig_hw1 != 0x2101:
         raise ValueError(
             f"Canonical reroll validation failed at 0x{hook_callsite + 2:06X}: "
-            f"expected movs r1,#0 (0x2100), found 0x{orig_hw1:04X}."
+            f"expected movs r1,#1 (0x2101), found 0x{orig_hw1:04X}."
         )
 
-    set_data_target_0 = decode_thumb_bl_target(data, field0_call)
     set_data_target_1 = decode_thumb_bl_target(data, field1_call)
-    if set_data_target_0 != set_data_target_1:
+    if set_data_target != set_data_target_1:
         raise ValueError(
             f"Canonical reroll validation failed: SetMonData BL targets differ "
-            f"(0x{set_data_target_0:06X} vs 0x{set_data_target_1:06X})."
+            f"(0x{set_data_target:06X} vs 0x{set_data_target_1:06X})."
         )
 
     rng_target_1 = decode_thumb_bl_target(data, rng_call_1)
@@ -696,7 +794,8 @@ def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list
             f"(0x{rng_target_1:06X} vs 0x{rng_target_2:06X})."
         )
 
-    cave = data[cave_offset : cave_offset + 0x100]
+    cave_offset = find_code_cave_near(data, hook_callsite, hook_payload_size)
+    cave = data[cave_offset : cave_offset + hook_payload_size]
     if any(b not in (0x00, 0xFF) for b in cave):
         raise ValueError(
             f"Code cave at 0x{cave_offset:06X} is not blank (not 0x00/0xFF)."
@@ -706,6 +805,7 @@ def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list
     hook = build_canonical_reroll_hook(
         cave_offset=cave_offset,
         rng_target=rng_target_1,
+        set_data_target=set_data_target,
         rerolls_remaining=rerolls_remaining,
         orig_hw0=orig_hw0,
         orig_hw1=orig_hw1,
@@ -717,7 +817,7 @@ def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list
     changes = [
         f"0x{hook_callsite:06X}: replaced personality SetMonData args with BL 0x{cave_offset:06X} (canonical reroll hook)",
         f"0x{cave_offset:06X}: wrote {len(hook)}-byte canonical reroll hook "
-        f"(reroll_attempts={plan.reroll_attempts}, rng=0x{rng_target_1:06X}, set_data=0x{set_data_target_0:06X})",
+        f"(reroll_attempts={plan.reroll_attempts}, rng=0x{rng_target_1:06X}, set_data=0x{set_data_target:06X})",
     ]
     return changes
 
@@ -1035,4 +1135,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 

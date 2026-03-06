@@ -112,8 +112,10 @@ To use your logo icon, launch via [KiraPatch.lnk](KiraPatch.lnk), which points t
 ## Supported ROM CRC32 values
 - `0xF0815EE7` - Pokemon Ruby Version (USA, Europe) Rev 0
 - `0x61641576` - Pokemon Ruby Version (USA, Europe) Rev 1
+- `0xAEAC73E6` - Pokemon Ruby Version (USA, Europe) Rev 2
 - `0x554DEDC4` - Pokemon Sapphire Version (USA, Europe) Rev 0
 - `0xBAFEDAE5` - Pokemon Sapphire Version (Europe) Rev 1
+- `0x9CC4410E` - Pokemon Sapphire Version (USA, Europe) Rev 2
 - `0xDD88761C` - Pokemon FireRed Version (USA) Rev 0
 - `0x84EE4776` - Pokemon FireRed Version (USA, Europe) Rev 1
 - `0xD69C96CC` - Pokemon LeafGreen Version (USA) Rev 0
