@@ -616,7 +616,21 @@ def find_canonical_create_mon_layout(data: bytearray, cmp_offset: int) -> tuple[
             "unexpected post-CreateBoxMon sequence."
         )
 
-    retry_target = create_box_call - 0x0A
+    # Retry from the fuller pre-call block so each reroll repeats the same setup path.
+    retry_target = create_box_call - 0x1C
+    if not _match_halfwords(data, retry_target, (0x4640, 0x9306)):
+        raise ValueError(
+            f"Canonical reroll validation failed at 0x{retry_target:06X}: "
+            "unexpected CreateMon retry-entry sequence."
+        )
+    try:
+        decode_thumb_bl_target(data, retry_target + 4)
+    except ValueError as exc:
+        raise ValueError(
+            f"Canonical reroll validation failed at 0x{retry_target + 4:06X}: "
+            "expected BL in CreateMon retry-entry sequence."
+        ) from exc
+
     return hook_callsite, retry_target
 def canonical_cmp_site(spec: RomSpec) -> PatchSite:
     candidates = [s for s in spec.patch_sites if s.kind == "odds_minus_one" and s.default_value == 0x07]
@@ -696,19 +710,23 @@ def build_canonical_create_mon_hook(
     emit_hw(0x2907)  # cmp r1,#7
     emit_b_cond(9, "done")  # bls done (already shiny)
 
-    emit_hw(0x0FE0)  # lsr r0,r4,#31 (r4 high-bit marks initialized counter state)
-    emit_hw(0x2800)  # cmp r0,#0
-    emit_b_cond(1, "counter_ready")  # bne counter_ready
-    emit_ldr_literal(4, "counter_init")
+    # Stack slot sp+0x14 survives the retry loop and avoids clobbering CreateMon args.
+    emit_hw(0x9805)  # ldr r0,[sp,#0x14]
+    emit_hw(0x0C01)  # lsr r1,r0,#16
+    emit_ldr_literal(2, "counter_magic_hi")
+    emit_hw(0x4291)  # cmp r1,r2
+    emit_b_cond(0, "counter_ready")  # beq counter_ready
+    emit_ldr_literal(0, "counter_init")
+    emit_hw(0x9005)  # str r0,[sp,#0x14]
 
     mark("counter_ready")
-    emit_hw(0x1C20)  # adds r0,r4,#0
-    emit_hw(0x0040)  # lsls r0,r0,#1 (drop marker bit, keep remaining count)
-    emit_hw(0x2800)  # cmp r0,#0
+    emit_hw(0x0401)  # lsl r1,r0,#16 (isolates low-16 retry counter)
+    emit_hw(0x2900)  # cmp r1,#0
     emit_b_cond(0, "done")  # beq done (no retries left)
-    emit_hw(0x3C01)  # subs r4,#1
+    emit_hw(0x3801)  # subs r0,#1
+    emit_hw(0x9005)  # str r0,[sp,#0x14]
     emit_ldr_literal(0, "retry_addr")
-    emit_hw(0x4700)  # bx r0 (jump to CreateMon arg-setup block and call CreateBoxMon again)
+    emit_hw(0x4700)  # bx r0 (jump back to CreateMon retry-entry block)
 
     mark("done")
     emit_hw(0x4640)  # mov r0,r8
@@ -721,8 +739,10 @@ def build_canonical_create_mon_hook(
     mark("retry_addr")
     hook.extend((((ROM_EXEC_BASE + retry_target) | 1) & 0xFFFFFFFF).to_bytes(4, "little"))
     mark("counter_init")
-    counter_value = 0x80000000 | (max(0, rerolls_remaining) & 0x7FFFFFFF)
+    counter_value = 0xA5A50000 | (max(0, rerolls_remaining) & 0xFFFF)
     hook.extend(counter_value.to_bytes(4, "little"))
+    mark("counter_magic_hi")
+    hook.extend((0x0000A5A5).to_bytes(4, "little"))
 
     for kind, pos, label, extra in fixups:
         if label not in labels:
