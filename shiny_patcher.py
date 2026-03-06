@@ -547,64 +547,76 @@ def find_code_cave_near(data: bytearray, branch_from: int, required_size: int) -
     )
 
 
-def find_canonical_layout(data: bytearray, cmp_offset: int) -> tuple[int, int, int]:
-    field1_call = -1
-    set_data_target = -1
+def _match_halfwords(data: bytearray, offset: int, words: tuple[int, ...]) -> bool:
+    if offset < 0 or offset + (2 * len(words)) > len(data):
+        return False
+    return all(read_halfword(data, offset + (i * 2)) == words[i] for i in range(len(words)))
 
-    fwd_start = min(len(data) - 8, cmp_offset + 0x10)
-    fwd_end = min(len(data) - 8, cmp_offset + 0x80)
-    for off in range(fwd_start, fwd_end, 2):
-        # Look for: add r0, rX, #0 ; movs r1,#1 ; mov r2,r9 ; bl SetMonData
-        hw0 = read_halfword(data, off - 6) if off >= 6 else -1
-        hw1 = read_halfword(data, off - 4) if off >= 4 else -1
-        hw2 = read_halfword(data, off - 2) if off >= 2 else -1
-        if not is_thumb_add_imm0_into_r0(hw0):
-            continue
-        if hw1 != 0x2101 or hw2 != 0x464A:
-            continue
+
+def find_canonical_create_mon_layout(data: bytearray, cmp_offset: int) -> tuple[int, int]:
+    # Nearby function prologues are stable in all supported Gen 3 ROMs:
+    # - CreateMon:    push {r4-r7,lr}; mov r7,r8; push {r7}; sub sp,#0x1c; mov r8,r0
+    # - CreateBoxMon: push {r4-r7,lr}; mov r7,sl; mov r6,sb; mov r5,r8; push {r5-r7}
+    create_mon_sig = (0xB5F0, 0x4647, 0xB480, 0xB087, 0x4680)
+    create_box_sig = (0xB5F0, 0x4657, 0x464E, 0x4645, 0xB4E0)
+
+    window_start = max(0, cmp_offset - 0x240)
+    window_end = min(len(data) - (2 * len(create_mon_sig)), cmp_offset + 0x80)
+
+    create_mon_start = -1
+    create_box_start = -1
+    for off in range(window_start, window_end + 1, 2):
+        if _match_halfwords(data, off, create_mon_sig):
+            create_mon_start = off
+        if _match_halfwords(data, off, create_box_sig):
+            create_box_start = off
+
+    if create_mon_start < 0 or create_box_start < 0:
+        raise ValueError(
+            f"Canonical reroll validation failed near 0x{cmp_offset:06X}: "
+            "could not locate CreateMon/CreateBoxMon prologues."
+        )
+
+    create_box_call = -1
+    scan_end = min(len(data) - 4, create_mon_start + 0x80)
+    for off in range(create_mon_start, scan_end, 2):
         try:
             target = decode_thumb_bl_target(data, off)
         except ValueError:
             continue
-        field1_call = off
-        set_data_target = target
-        break
-
-    if field1_call < 0:
-        raise ValueError(
-            f"Canonical reroll validation failed near 0x{cmp_offset:06X}: "
-            "could not locate OTID SetMonData callsite."
-        )
-
-    hook_callsite = field1_call - 6
-    if hook_callsite < 0:
-        raise ValueError("Canonical reroll validation failed: invalid callsite bounds.")
-
-    # Also verify the earlier personality SetMonData call exists and targets the same function.
-    field0_found = False
-    back_start = max(0, cmp_offset - 0x80)
-    back_end = min(len(data) - 6, cmp_offset)
-    for off in range(back_start, back_end, 2):
-        hw1 = read_halfword(data, off + 2)
-        if hw1 != 0x2100:
-            continue
-        try:
-            target = decode_thumb_bl_target(data, off + 4)
-        except ValueError:
-            continue
-        if target == set_data_target and is_thumb_add_imm0_into_r0(read_halfword(data, off)):
-            field0_found = True
+        if target == create_box_start:
+            create_box_call = off
             break
 
-    if not field0_found:
+    if create_box_call < 0:
         raise ValueError(
             f"Canonical reroll validation failed near 0x{cmp_offset:06X}: "
-            "could not verify personality SetMonData callsite."
+            "could not locate CreateMon -> CreateBoxMon callsite."
         )
 
-    return hook_callsite, field1_call, set_data_target
+    # Expected CreateMon sequence around callsite:
+    #   ... mov r0,r8 ; adds r1,r6,#0 ; add r2,sp,#0x10 ; ldrb r2,[r2] ; ldr r3,[sp,#0x18] ; bl CreateBoxMon
+    #   mov r0,r8 ; movs r1,#0x38 ; add r2,sp,#0x10 ; bl SetMonData
+    pre_sig = (0x4640, 0x1C31, 0xAA04, 0x7812, 0x9B06)
+    if not _match_halfwords(data, create_box_call - 0x0A, pre_sig):
+        raise ValueError(
+            f"Canonical reroll validation failed at 0x{create_box_call - 0x0A:06X}: "
+            "unexpected CreateMon argument setup sequence."
+        )
 
+    hook_callsite = create_box_call + 4
+    if (
+        read_halfword(data, hook_callsite) != 0x4640
+        or read_halfword(data, hook_callsite + 2) != 0x2138
+        or read_halfword(data, hook_callsite + 4) != 0xAA04
+    ):
+        raise ValueError(
+            f"Canonical reroll validation failed at 0x{hook_callsite:06X}: "
+            "unexpected post-CreateBoxMon sequence."
+        )
 
+    retry_target = create_box_call - 0x0A
+    return hook_callsite, retry_target
 def canonical_cmp_site(spec: RomSpec) -> PatchSite:
     candidates = [s for s in spec.patch_sites if s.kind == "odds_minus_one" and s.default_value == 0x07]
     if not candidates:
@@ -642,13 +654,10 @@ def encode_thumb_b(from_addr: int, target_addr: int) -> bytes:
     return hw.to_bytes(2, "little")
 
 
-def build_canonical_reroll_hook(
+def build_canonical_create_mon_hook(
     cave_offset: int,
-    rng_target: int,
-    set_data_target: int,
+    retry_target: int,
     rerolls_remaining: int,
-    orig_hw0: int,
-    orig_hw1: int,
 ) -> bytes:
     hook = bytearray()
     labels: dict[str, int] = {}
@@ -673,55 +682,46 @@ def build_canonical_reroll_hook(
         emit_hw(0xD000 | ((cond_code & 0xF) << 8))
         fixups.append(("bcond", pos, label, cond_code))
 
-    def emit_b(label: str) -> None:
-        pos = cur_addr()
-        emit_hw(0xE000)
-        fixups.append(("b", pos, label, 0))
-
-    emit_hw(0xB5F0)  # push {r4-r7,lr}
-    emit_hw(0x464E)  # mov r6,r9
-    emit_hw(0x3E04)  # subs r6,#4 (personality local = OTID local - 4)
-    emit_hw(0x6835)  # ldr r5,[r6]
-    emit_hw(0x4648)  # mov r0,r9
-    emit_hw(0x6803)  # ldr r3,[r0]
-    emit_ldr_literal(4, "rerolls_lit")
-
-    mark("check")
-    emit_hw(0x0C29)  # lsr r1,r5,#16
-    emit_hw(0x4069)  # eor r1,r5
+    emit_hw(0x4640)  # mov r0,r8 (struct Pokemon *)
+    emit_hw(0x6802)  # ldr r2,[r0]    (PID)
+    emit_hw(0x6843)  # ldr r3,[r0,#4] (OTID)
+    emit_hw(0x0C11)  # lsr r1,r2,#16
+    emit_hw(0x4051)  # eor r1,r2
     emit_hw(0x0C18)  # lsr r0,r3,#16
     emit_hw(0x4058)  # eor r0,r3
     emit_hw(0x4041)  # eor r1,r0
     emit_hw(0x0409)  # lsl r1,r1,#16
     emit_hw(0x0C09)  # lsr r1,r1,#16
     emit_hw(0x2907)  # cmp r1,#7
-    emit_b_cond(9, "done")  # bls done
-    emit_hw(0x2C00)  # cmp r4,#0
-    emit_b_cond(0, "done")  # beq done
-    emit_hw(0x3C01)  # subs r4,#1
-    hook.extend(encode_thumb_bl(cur_addr(), rng_target))
-    emit_hw(0x0405)  # lsl r5,r0,#16
-    hook.extend(encode_thumb_bl(cur_addr(), rng_target))
-    emit_hw(0x0400)  # lsl r0,r0,#16
-    emit_hw(0x0C00)  # lsr r0,r0,#16
-    emit_hw(0x4305)  # orr r5,r0
-    emit_b("check")
+    emit_b_cond(9, "done")  # bls done (already shiny)
+
+    emit_hw(0x0FE8)  # lsr r0,r5,#31 (r5 high-bit marks initialized counter state)
+    emit_hw(0x2800)  # cmp r0,#0
+    emit_b_cond(1, "counter_ready")  # bne counter_ready
+    emit_ldr_literal(5, "counter_init")
+
+    mark("counter_ready")
+    emit_hw(0x1C28)  # adds r0,r5,#0
+    emit_hw(0x0040)  # lsls r0,r0,#1 (drop marker bit, keep remaining count)
+    emit_hw(0x2800)  # cmp r0,#0
+    emit_b_cond(0, "done")  # beq done (no retries left)
+    emit_hw(0x3D01)  # subs r5,#1
+    emit_ldr_literal(0, "retry_addr")
+    emit_hw(0x4700)  # bx r0 (jump to CreateMon arg-setup block and call CreateBoxMon again)
 
     mark("done")
-    emit_hw(0x6035)  # str r5,[r6]
-    emit_hw(0x0032)  # mov r2,r6
-    emit_hw(0x1C38)  # adds r0,r7,#0
-    emit_hw(0x2100)  # movs r1,#0 (personality field)
-    hook.extend(encode_thumb_bl(cur_addr(), set_data_target))
-    emit_hw(orig_hw0)
-    emit_hw(orig_hw1)
-    emit_hw(0xBDF0)  # pop {r4-r7,pc}
+    emit_hw(0x4640)  # mov r0,r8
+    emit_hw(0x2138)  # movs r1,#0x38
+    emit_hw(0x4770)  # bx lr
 
     while len(hook) % 4 != 0:
         emit_hw(0x46C0)  # nop
 
-    mark("rerolls_lit")
-    hook.extend((rerolls_remaining & 0xFFFFFFFF).to_bytes(4, "little"))
+    mark("retry_addr")
+    hook.extend(((retry_target | 1) & 0xFFFFFFFF).to_bytes(4, "little"))
+    mark("counter_init")
+    counter_value = 0x80000000 | (max(0, rerolls_remaining) & 0x7FFFFFFF)
+    hook.extend(counter_value.to_bytes(4, "little"))
 
     for kind, pos, label, extra in fixups:
         if label not in labels:
@@ -740,19 +740,13 @@ def build_canonical_reroll_hook(
             hook[idx : idx + 2] = hw.to_bytes(2, "little")
         elif kind == "bcond":
             hook[idx : idx + 2] = encode_thumb_b_cond(pos, target, extra)
-        elif kind == "b":
-            hook[idx : idx + 2] = encode_thumb_b(pos, target)
         else:
             raise ValueError(f"Internal hook fixup kind error: {kind}")
 
     return bytes(hook)
-
-
 def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list[str]:
     cmp_site = canonical_cmp_site(spec)
     cmp_offset = cmp_site.offset
-    rng_call_1 = cmp_offset - 0x2E
-    rng_call_2 = cmp_offset - 0x28
     hook_payload_size = 0x100
 
     cmp_hw = read_halfword(data, cmp_offset)
@@ -762,36 +756,21 @@ def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list
             f"expected cmp Rx,#imm (0x29xx), found 0x{cmp_hw:04X}."
         )
 
-    hook_callsite, field1_call, set_data_target = find_canonical_layout(data, cmp_offset)
-    if hook_callsite - 2 < 0 or field1_call + 4 > len(data):
+    hook_callsite, retry_target = find_canonical_create_mon_layout(data, cmp_offset)
+    if hook_callsite < 0 or hook_callsite + 4 > len(data):
         raise ValueError("ROM layout too small for canonical reroll hook patch.")
 
     orig_hw0 = read_halfword(data, hook_callsite)
     orig_hw1 = read_halfword(data, hook_callsite + 2)
-    if not is_thumb_add_imm0_into_r0(orig_hw0):
+    if orig_hw0 != 0x4640:
         raise ValueError(
             f"Canonical reroll validation failed at 0x{hook_callsite:06X}: "
-            f"expected add r0,Rx,#0 call-setup opcode, found 0x{orig_hw0:04X}."
+            f"expected mov r0,r8 (0x4640), found 0x{orig_hw0:04X}."
         )
-    if orig_hw1 != 0x2101:
+    if orig_hw1 != 0x2138:
         raise ValueError(
             f"Canonical reroll validation failed at 0x{hook_callsite + 2:06X}: "
-            f"expected movs r1,#1 (0x2101), found 0x{orig_hw1:04X}."
-        )
-
-    set_data_target_1 = decode_thumb_bl_target(data, field1_call)
-    if set_data_target != set_data_target_1:
-        raise ValueError(
-            f"Canonical reroll validation failed: SetMonData BL targets differ "
-            f"(0x{set_data_target:06X} vs 0x{set_data_target_1:06X})."
-        )
-
-    rng_target_1 = decode_thumb_bl_target(data, rng_call_1)
-    rng_target_2 = decode_thumb_bl_target(data, rng_call_2)
-    if rng_target_1 != rng_target_2:
-        raise ValueError(
-            f"Canonical reroll validation failed: RNG BL targets differ "
-            f"(0x{rng_target_1:06X} vs 0x{rng_target_2:06X})."
+            f"expected movs r1,#0x38 (0x2138), found 0x{orig_hw1:04X}."
         )
 
     cave_offset = find_code_cave_near(data, hook_callsite, hook_payload_size)
@@ -802,26 +781,21 @@ def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list
         )
 
     rerolls_remaining = max(0, plan.reroll_attempts - 1)
-    hook = build_canonical_reroll_hook(
+    hook = build_canonical_create_mon_hook(
         cave_offset=cave_offset,
-        rng_target=rng_target_1,
-        set_data_target=set_data_target,
+        retry_target=retry_target,
         rerolls_remaining=rerolls_remaining,
-        orig_hw0=orig_hw0,
-        orig_hw1=orig_hw1,
     )
 
     data[cave_offset : cave_offset + len(hook)] = hook
     data[hook_callsite : hook_callsite + 4] = encode_thumb_bl(hook_callsite, cave_offset)
 
     changes = [
-        f"0x{hook_callsite:06X}: replaced personality SetMonData args with BL 0x{cave_offset:06X} (canonical reroll hook)",
+        f"0x{hook_callsite:06X}: replaced post-CreateBoxMon setup with BL 0x{cave_offset:06X} (canonical reroll hook)",
         f"0x{cave_offset:06X}: wrote {len(hook)}-byte canonical reroll hook "
-        f"(reroll_attempts={plan.reroll_attempts}, rng=0x{rng_target_1:06X}, set_data=0x{set_data_target:06X})",
+        f"(reroll_attempts={plan.reroll_attempts}, retry_target=0x{retry_target:06X})",
     ]
     return changes
-
-
 def detect_site_format(data: bytearray, site: PatchSite) -> str:
     if site.offset >= len(data):
         raise ValueError(f"Offset 0x{site.offset:06X} is outside ROM size.")
