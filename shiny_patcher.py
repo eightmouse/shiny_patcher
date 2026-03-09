@@ -554,25 +554,40 @@ def _match_halfwords(data: bytearray, offset: int, words: tuple[int, ...]) -> bo
     return all(read_halfword(data, offset + (i * 2)) == words[i] for i in range(len(words)))
 
 
-def find_canonical_create_mon_layout(data: bytearray, cmp_offset: int) -> tuple[int, int]:
-    # Nearby function prologues are stable in all supported Gen 3 ROMs:
-    # - CreateMon:    push {r4-r7,lr}; mov r7,r8; push {r7}; sub sp,#0x1c; mov r8,r0
-    # - CreateBoxMon: push {r4-r7,lr}; mov r7,sl; mov r6,sb; mov r5,r8; push {r5-r7}
+def find_create_mon_start(data: bytearray, cmp_offset: int) -> int:
     create_mon_sig = (0xB5F0, 0x4647, 0xB480, 0xB087, 0x4680)
-    create_box_sig = (0xB5F0, 0x4657, 0x464E, 0x4645, 0xB4E0)
-
     window_start = max(0, cmp_offset - 0x240)
     window_end = min(len(data) - (2 * len(create_mon_sig)), cmp_offset + 0x80)
 
     create_mon_start = -1
-    create_box_start = -1
     for off in range(window_start, window_end + 1, 2):
         if _match_halfwords(data, off, create_mon_sig):
             create_mon_start = off
+
+    if create_mon_start < 0:
+        raise ValueError(
+            f"Canonical reroll validation failed near 0x{cmp_offset:06X}: "
+            "could not locate CreateMon prologue."
+        )
+    return create_mon_start
+
+
+def find_canonical_create_mon_layout(data: bytearray, cmp_offset: int) -> tuple[int, int]:
+    # Nearby function prologues are stable in all supported Gen 3 ROMs:
+    # - CreateMon:    push {r4-r7,lr}; mov r7,r8; push {r7}; sub sp,#0x1c; mov r8,r0
+    # - CreateBoxMon: push {r4-r7,lr}; mov r7,sl; mov r6,sb; mov r5,r8; push {r5-r7}
+    create_box_sig = (0xB5F0, 0x4657, 0x464E, 0x4645, 0xB4E0)
+
+    window_start = max(0, cmp_offset - 0x240)
+    window_end = min(len(data) - (2 * len(create_box_sig)), cmp_offset + 0x80)
+
+    create_mon_start = find_create_mon_start(data, cmp_offset)
+    create_box_start = -1
+    for off in range(window_start, window_end + 1, 2):
         if _match_halfwords(data, off, create_box_sig):
             create_box_start = off
 
-    if create_mon_start < 0 or create_box_start < 0:
+    if create_box_start < 0:
         raise ValueError(
             f"Canonical reroll validation failed near 0x{cmp_offset:06X}: "
             "could not locate CreateMon/CreateBoxMon prologues."
@@ -634,6 +649,71 @@ def find_canonical_create_mon_layout(data: bytearray, cmp_offset: int) -> tuple[
     retry_target = create_box_call - 0x1C
 
     return hook_callsite, retry_target
+
+
+def find_nature_wrapper_hook_site(
+    data: bytearray,
+    create_mon_start: int,
+) -> tuple[int, int]:
+    wrapper_sig = (0xB5F0, 0x464F, 0x4646, 0xB4C0, 0xB084, 0x4681)
+    wrapper_start = -1
+    window_start = create_mon_start + 0x300
+    window_end = min(len(data) - (2 * len(wrapper_sig)), create_mon_start + 0x420)
+
+    for off in range(window_start, window_end + 1, 2):
+        if _match_halfwords(data, off, wrapper_sig):
+            wrapper_start = off
+            break
+
+    if wrapper_start < 0:
+        raise ValueError(
+            f"Canonical reroll validation failed near 0x{create_mon_start:06X}: "
+            "could not locate fixed-personality nature wrapper."
+        )
+
+    create_mon_call = -1
+    scan_end = min(len(data) - 4, wrapper_start + 0x80)
+    for off in range(wrapper_start, scan_end, 2):
+        try:
+            target = decode_thumb_bl_target(data, off)
+        except ValueError:
+            continue
+        if target == create_mon_start:
+            create_mon_call = off
+            break
+
+    if create_mon_call < 0:
+        raise ValueError(
+            f"Canonical reroll validation failed near 0x{wrapper_start:06X}: "
+            "could not locate nature wrapper -> CreateMon callsite."
+        )
+
+    pre_sig = (0x2001, 0x9000, 0x9401, 0x2000, 0x9002, 0x9003, 0x4648, 0x4641, 0x1C3A, 0x1C33)
+    if not _match_halfwords(data, create_mon_call - 0x14, pre_sig):
+        raise ValueError(
+            f"Canonical reroll validation failed at 0x{create_mon_call - 0x14:06X}: "
+            "unexpected fixed-personality wrapper argument setup."
+        )
+
+    post_sig = (0xB004, 0xBC18, 0x4698, 0x46A1, 0xBCF0, 0xBC01, 0x4700)
+    hook_callsite = create_mon_call + 4
+    if not _match_halfwords(data, hook_callsite, post_sig):
+        raise ValueError(
+            f"Canonical reroll validation failed at 0x{hook_callsite:06X}: "
+            "unexpected fixed-personality wrapper epilogue."
+        )
+
+    retry_target = wrapper_start + 0x20
+    try:
+        decode_thumb_bl_target(data, retry_target)
+    except ValueError as exc:
+        raise ValueError(
+            f"Canonical reroll validation failed at 0x{retry_target:06X}: "
+            "unexpected fixed-personality wrapper retry point."
+        ) from exc
+
+    return hook_callsite, retry_target
+
 
 def find_secondary_create_box_wrapper_sites(
     data: bytearray,
@@ -799,6 +879,110 @@ def build_canonical_create_mon_hook(
 
     return bytes(hook)
 
+
+def build_canonical_highreg_wrapper_hook(
+    cave_offset: int,
+    retry_target: int,
+    rerolls_remaining: int,
+) -> bytes:
+    hook = bytearray()
+    labels: dict[str, int] = {}
+    fixups: list[tuple[str, int, str, int]] = []
+
+    def cur_addr() -> int:
+        return cave_offset + len(hook)
+
+    def emit_hw(value: int) -> None:
+        hook.extend((value & 0xFFFF).to_bytes(2, "little"))
+
+    def mark(name: str) -> None:
+        labels[name] = cur_addr()
+
+    def emit_ldr_literal(rd: int, label: str) -> None:
+        pos = cur_addr()
+        emit_hw(0x4800 | ((rd & 0x7) << 8))
+        fixups.append(("ldr", pos, label, rd))
+
+    def emit_b_cond(cond_code: int, label: str) -> None:
+        pos = cur_addr()
+        emit_hw(0xD000 | ((cond_code & 0xF) << 8))
+        fixups.append(("bcond", pos, label, cond_code))
+
+    emit_hw(0x4648)  # mov r0,r9 (struct Pokemon *)
+    emit_hw(0x6802)  # ldr r2,[r0]    (PID)
+    emit_hw(0x6843)  # ldr r3,[r0,#4] (OTID)
+    emit_hw(0x0C11)  # lsr r1,r2,#16
+    emit_hw(0x4051)  # eor r1,r2
+    emit_hw(0x0C18)  # lsr r0,r3,#16
+    emit_hw(0x4058)  # eor r0,r3
+    emit_hw(0x4041)  # eor r1,r0
+    emit_hw(0x0409)  # lsl r1,r1,#16
+    emit_hw(0x0C09)  # lsr r1,r1,#16
+    emit_hw(0x2907)  # cmp r1,#7
+    emit_b_cond(9, "done")  # bls done (already shiny)
+
+    # Reuse the saved-r8 stack slot and restore it from live r8 before returning.
+    emit_hw(0x9804)  # ldr r0,[sp,#0x10]
+    emit_hw(0x0C01)  # lsr r1,r0,#16
+    emit_ldr_literal(2, "counter_magic_hi")
+    emit_hw(0x4291)  # cmp r1,r2
+    emit_b_cond(0, "counter_ready")  # beq counter_ready
+    emit_ldr_literal(0, "counter_init")
+    emit_hw(0x9004)  # str r0,[sp,#0x10]
+
+    mark("counter_ready")
+    emit_hw(0x0401)  # lsl r1,r0,#16
+    emit_hw(0x2900)  # cmp r1,#0
+    emit_b_cond(0, "done")  # beq done
+    emit_hw(0x3801)  # subs r0,#1
+    emit_hw(0x9004)  # str r0,[sp,#0x10]
+    emit_ldr_literal(0, "retry_addr")
+    emit_hw(0x4700)  # bx r0
+
+    mark("done")
+    emit_hw(0x4640)  # mov r0,r8
+    emit_hw(0x9004)  # str r0,[sp,#0x10]
+    emit_hw(0xB004)  # add sp,#0x10
+    emit_hw(0xBC18)  # pop {r3,r4}
+    emit_hw(0x4698)  # mov r8,r3
+    emit_hw(0x46A1)  # mov r9,r4
+    emit_hw(0xBCF0)  # pop {r4-r7}
+    emit_hw(0xBC01)  # pop {r0}
+    emit_hw(0x4700)  # bx r0
+
+    while len(hook) % 4 != 0:
+        emit_hw(0x46C0)  # nop
+
+    mark("retry_addr")
+    hook.extend((((ROM_EXEC_BASE + retry_target) | 1) & 0xFFFFFFFF).to_bytes(4, "little"))
+    mark("counter_init")
+    counter_value = 0xA5A50000 | (max(0, rerolls_remaining) & 0xFFFF)
+    hook.extend(counter_value.to_bytes(4, "little"))
+    mark("counter_magic_hi")
+    hook.extend((0x0000A5A5).to_bytes(4, "little"))
+
+    for kind, pos, label, extra in fixups:
+        if label not in labels:
+            raise ValueError(f"Internal hook fixup error: missing label {label}")
+        target = labels[label]
+        idx = pos - cave_offset
+        if kind == "ldr":
+            pc_aligned = (pos + 4) & ~0x3
+            delta = target - pc_aligned
+            if delta < 0 or delta % 4 != 0 or delta > 1020:
+                raise ValueError(
+                    f"Literal load out of range at 0x{pos:06X} -> 0x{target:06X}"
+                )
+            imm8 = delta // 4
+            hw = 0x4800 | ((extra & 0x7) << 8) | imm8
+            hook[idx : idx + 2] = hw.to_bytes(2, "little")
+        elif kind == "bcond":
+            hook[idx : idx + 2] = encode_thumb_b_cond(pos, target, extra)
+        else:
+            raise ValueError(f"Internal hook fixup kind error: {kind}")
+
+    return bytes(hook)
+
 def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list[str]:
     cmp_site = canonical_cmp_site(spec)
     cmp_offset = cmp_site.offset
@@ -811,10 +995,15 @@ def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list
             f"expected cmp Rx,#imm (0x29xx), found 0x{cmp_hw:04X}."
         )
 
+    create_mon_start = find_create_mon_start(data, cmp_offset)
     primary_hook_callsite, primary_retry_target = find_canonical_create_mon_layout(data, cmp_offset)
     if primary_hook_callsite < 0 or primary_hook_callsite + 4 > len(data):
         raise ValueError("ROM layout too small for canonical reroll hook patch.")
 
+    nature_wrapper_hook_callsite, nature_wrapper_retry_target = find_nature_wrapper_hook_site(
+        data,
+        create_mon_start,
+    )
     primary_create_box_call = primary_hook_callsite - 4
     create_box_target = decode_thumb_bl_target(data, primary_create_box_call)
     hook_sites: list[tuple[int, int, int, int, tuple[int, ...]]] = [
@@ -872,6 +1061,32 @@ def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list
             f"0x{cave_offset:06X}: wrote {len(hook)}-byte canonical reroll hook "
             f"(reroll_attempts={plan.reroll_attempts}, retry_target=0x{retry_target:06X})"
         )
+
+    nature_cave_offset = find_code_cave_near(data, nature_wrapper_hook_callsite, hook_payload_size)
+    nature_cave = data[nature_cave_offset : nature_cave_offset + hook_payload_size]
+    if any(b not in (0x00, 0xFF) for b in nature_cave):
+        raise ValueError(
+            f"Code cave at 0x{nature_cave_offset:06X} is not blank (not 0x00/0xFF)."
+        )
+
+    nature_hook = build_canonical_highreg_wrapper_hook(
+        cave_offset=nature_cave_offset,
+        retry_target=nature_wrapper_retry_target,
+        rerolls_remaining=rerolls_remaining,
+    )
+    data[nature_cave_offset : nature_cave_offset + len(nature_hook)] = nature_hook
+    data[nature_wrapper_hook_callsite : nature_wrapper_hook_callsite + 4] = encode_thumb_bl(
+        nature_wrapper_hook_callsite,
+        nature_cave_offset,
+    )
+    changes.append(
+        f"0x{nature_wrapper_hook_callsite:06X}: replaced with BL 0x{nature_cave_offset:06X} "
+        "(canonical fixed-personality wrapper hook)"
+    )
+    changes.append(
+        f"0x{nature_cave_offset:06X}: wrote {len(nature_hook)}-byte canonical fixed-personality hook "
+        f"(reroll_attempts={plan.reroll_attempts}, retry_target=0x{nature_wrapper_retry_target:06X})"
+    )
 
     return changes
 
