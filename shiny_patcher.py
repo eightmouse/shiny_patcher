@@ -596,9 +596,16 @@ def find_canonical_create_mon_layout(data: bytearray, cmp_offset: int) -> tuple[
         )
 
     # Expected CreateMon sequence around callsite:
+    #   ... mov r0,r8 ; str r3,[sp,#0x18] ; bl <helper>
     #   ... str r4,[sp,#0] ; str r7,[sp,#4] ; str r5,[sp,#8] ; ldr r0,[sp,#0x40] ; str r0,[sp,#0x0c]
     #   mov r0,r8 ; adds r1,r6,#0 ; add r2,sp,#0x10 ; ldrb r2,[r2] ; ldr r3,[sp,#0x18] ; bl CreateBoxMon
     #   mov r0,r8 ; movs r1,#0x38 ; add r2,sp,#0x10 ; bl SetMonData
+    pre_helper_sig = (0x4640, 0x9306)
+    if not _match_halfwords(data, create_box_call - 0x1C, pre_helper_sig):
+        raise ValueError(
+            f"Canonical reroll validation failed at 0x{create_box_call - 0x1C:06X}: "
+            "unexpected CreateMon pre-helper sequence."
+        )
     pre_sig = (0x4640, 0x1C31, 0xAA04, 0x7812, 0x9B06)
     if not _match_halfwords(data, create_box_call - 0x0A, pre_sig):
         raise ValueError(
@@ -623,8 +630,8 @@ def find_canonical_create_mon_layout(data: bytearray, cmp_offset: int) -> tuple[
             "unexpected post-CreateBoxMon sequence."
         )
 
-    # Retry from the full stack-argument reload block so all CreateBoxMon args are rebuilt each loop.
-    retry_target = create_box_call - 0x14
+    # Retry from the full pre-helper block so CreateMon replays the same setup as the first attempt.
+    retry_target = create_box_call - 0x1C
 
     return hook_callsite, retry_target
 def canonical_cmp_site(spec: RomSpec) -> PatchSite:
@@ -720,6 +727,7 @@ def build_canonical_create_mon_hook(
     emit_b_cond(0, "done")  # beq done (no retries left)
     emit_hw(0x3801)  # subs r0,#1
     emit_hw(0x9005)  # str r0,[sp,#0x14]
+    emit_hw(0x9B06)  # ldr r3,[sp,#0x18] (restore original CreateMon arg before replay)
     emit_ldr_literal(0, "retry_addr")
     emit_hw(0x4700)  # bx r0 (jump back to CreateMon retry-entry block)
 
