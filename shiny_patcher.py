@@ -764,6 +764,42 @@ def find_fixed_personality_wrapper_sites(
     return sites
 
 
+def find_frlg_starter_direct_site(
+    data: bytearray,
+    create_mon_start: int,
+) -> tuple[int, int, int] | None:
+    pre_sig = (0x2101, 0x9100, 0x9001, 0x2000, 0x9002, 0x9003, 0x1C10, 0x21C9, 0x1C32, 0x2320)
+    post_sig = (0xB004, 0xBC70, 0xBC01, 0x4700)
+
+    for off in range(0, len(data) - 4, 2):
+        try:
+            target = decode_thumb_bl_target(data, off)
+        except ValueError:
+            continue
+        if target != create_mon_start:
+            continue
+        if not _match_halfwords(data, off - 0x14, pre_sig):
+            continue
+        if not _match_halfwords(data, off + 4, post_sig):
+            continue
+        retry_target = off - 0x34
+        if retry_target < 0:
+            raise ValueError(
+                f"Canonical reroll validation failed at 0x{off:06X}: starter retry target underflow."
+            )
+        struct_ldr_off = off - 0x16
+        struct_ldr_hw = read_halfword(data, struct_ldr_off)
+        if not is_thumb_ldr_literal(struct_ldr_hw) or ((struct_ldr_hw >> 8) & 0x7) != 2:
+            raise ValueError(
+                f"Canonical reroll validation failed at 0x{struct_ldr_off:06X}: expected starter struct literal load into r2."
+            )
+        struct_lit_addr = literal_address_from_ldr(struct_ldr_off, struct_ldr_hw)
+        struct_ptr = int.from_bytes(data[struct_lit_addr : struct_lit_addr + 4], "little")
+        return off + 4, retry_target, struct_ptr
+
+    return None
+
+
 def find_secondary_create_box_wrapper_sites(
     data: bytearray,
     primary_create_box_call: int,
@@ -1057,6 +1093,105 @@ def build_canonical_wrapper_hook(
     return bytes(hook)
 
 
+def build_canonical_frlg_starter_hook(
+    cave_offset: int,
+    retry_target: int,
+    struct_ptr: int,
+    rerolls_remaining: int,
+) -> bytes:
+    hook = bytearray()
+    labels: dict[str, int] = {}
+    fixups: list[tuple[str, int, str, int]] = []
+
+    def cur_addr() -> int:
+        return cave_offset + len(hook)
+
+    def emit_hw(value: int) -> None:
+        hook.extend((value & 0xFFFF).to_bytes(2, "little"))
+
+    def mark(name: str) -> None:
+        labels[name] = cur_addr()
+
+    def emit_ldr_literal(rd: int, label: str) -> None:
+        pos = cur_addr()
+        emit_hw(0x4800 | ((rd & 0x7) << 8))
+        fixups.append(("ldr", pos, label, rd))
+
+    def emit_b_cond(cond_code: int, label: str) -> None:
+        pos = cur_addr()
+        emit_hw(0xD000 | ((cond_code & 0xF) << 8))
+        fixups.append(("bcond", pos, label, cond_code))
+
+    emit_hw(0x1C20)  # adds r0,r4,#0
+    emit_hw(0x0C01)  # lsr r1,r0,#16
+    emit_ldr_literal(2, "counter_magic_hi")
+    emit_hw(0x4291)  # cmp r1,r2
+    emit_b_cond(0, "counter_ready")  # beq counter_ready
+    emit_ldr_literal(4, "counter_init")
+
+    mark("counter_ready")
+    emit_ldr_literal(0, "struct_ptr")
+    emit_hw(0x6802)  # ldr r2,[r0]
+    emit_hw(0x6843)  # ldr r3,[r0,#4]
+    emit_hw(0x0C11)  # lsr r1,r2,#16
+    emit_hw(0x4051)  # eor r1,r2
+    emit_hw(0x0C18)  # lsr r0,r3,#16
+    emit_hw(0x4058)  # eor r0,r3
+    emit_hw(0x4041)  # eor r1,r0
+    emit_hw(0x0409)  # lsl r1,r1,#16
+    emit_hw(0x0C09)  # lsr r1,r1,#16
+    emit_hw(0x2907)  # cmp r1,#7
+    emit_b_cond(9, "done")  # bls done
+
+    emit_hw(0x1C20)  # adds r0,r4,#0
+    emit_hw(0x0401)  # lsl r1,r0,#16
+    emit_hw(0x2900)  # cmp r1,#0
+    emit_b_cond(0, "done")  # beq done
+    emit_hw(0x3C01)  # subs r4,#1
+    emit_ldr_literal(0, "retry_addr")
+    emit_hw(0x4700)  # bx r0
+
+    mark("done")
+    emit_hw(0xB004)  # add sp,#0x10
+    emit_hw(0xBC70)  # pop {r4-r6}
+    emit_hw(0x4770)  # bx lr
+
+    while len(hook) % 4 != 0:
+        emit_hw(0x46C0)
+
+    mark("retry_addr")
+    hook.extend((((ROM_EXEC_BASE + retry_target) | 1) & 0xFFFFFFFF).to_bytes(4, "little"))
+    mark("counter_init")
+    counter_value = 0xA5A50000 | (max(0, rerolls_remaining) & 0xFFFF)
+    hook.extend(counter_value.to_bytes(4, "little"))
+    mark("counter_magic_hi")
+    hook.extend((0x0000A5A5).to_bytes(4, "little"))
+    mark("struct_ptr")
+    hook.extend((struct_ptr & 0xFFFFFFFF).to_bytes(4, "little"))
+
+    for kind, pos, label, extra in fixups:
+        if label not in labels:
+            raise ValueError(f"Internal hook fixup error: missing label {label}")
+        target = labels[label]
+        idx = pos - cave_offset
+        if kind == "ldr":
+            pc_aligned = (pos + 4) & ~0x3
+            delta = target - pc_aligned
+            if delta < 0 or delta % 4 != 0 or delta > 1020:
+                raise ValueError(
+                    f"Literal load out of range at 0x{pos:06X} -> 0x{target:06X}"
+                )
+            imm8 = delta // 4
+            hw = 0x4800 | ((extra & 0x7) << 8) | imm8
+            hook[idx : idx + 2] = hw.to_bytes(2, "little")
+        elif kind == "bcond":
+            hook[idx : idx + 2] = encode_thumb_b_cond(pos, target, extra)
+        else:
+            raise ValueError(f"Internal hook fixup kind error: {kind}")
+
+    return bytes(hook)
+
+
 def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list[str]:
     cmp_site = canonical_cmp_site(spec)
     cmp_offset = cmp_site.offset
@@ -1078,15 +1213,22 @@ def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list
         data,
         create_mon_start,
     )
+    starter_direct_site = None
     use_outer_wrapper_c = spec.game_code in {"BPRE", "BPGE"}
+    if spec.game_code in {"BPRE", "BPGE"}:
+        starter_direct_site = find_frlg_starter_direct_site(data, create_mon_start)
     outer_wrapper_sites = [
         site for site in wrapper_sites
         if site[0].name != "fixed-personality wrapper C" or use_outer_wrapper_c
     ]
-    skip_caller_returns = tuple(
+    skip_return_addrs = [
         ((ROM_EXEC_BASE + hook_callsite) | 1) & 0xFFFFFFFF
         for layout, hook_callsite, _ in outer_wrapper_sites
-    )
+    ]
+    if starter_direct_site is not None:
+        starter_hook_callsite, _, _ = starter_direct_site
+        skip_return_addrs.append(((ROM_EXEC_BASE + starter_hook_callsite) | 1) & 0xFFFFFFFF)
+    skip_caller_returns = tuple(skip_return_addrs)
     primary_create_box_call = primary_hook_callsite - 4
     create_box_target = decode_thumb_bl_target(data, primary_create_box_call)
     hook_sites: list[tuple[int, int, int, int, tuple[int, ...]]] = [
@@ -1144,6 +1286,34 @@ def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list
         changes.append(
             f"0x{cave_offset:06X}: wrote {len(hook)}-byte canonical reroll hook "
             f"(reroll_attempts={plan.reroll_attempts}, retry_target=0x{retry_target:06X})"
+        )
+
+    if starter_direct_site is not None:
+        starter_hook_callsite, starter_retry_target, starter_struct_ptr = starter_direct_site
+        starter_cave_offset = find_code_cave_near(data, starter_hook_callsite, hook_payload_size)
+        starter_cave = data[starter_cave_offset : starter_cave_offset + hook_payload_size]
+        if any(b not in (0x00, 0xFF) for b in starter_cave):
+            raise ValueError(
+                f"Code cave at 0x{starter_cave_offset:06X} is not blank (not 0x00/0xFF)."
+            )
+        starter_hook = build_canonical_frlg_starter_hook(
+            cave_offset=starter_cave_offset,
+            retry_target=starter_retry_target,
+            struct_ptr=starter_struct_ptr,
+            rerolls_remaining=rerolls_remaining,
+        )
+        data[starter_cave_offset : starter_cave_offset + len(starter_hook)] = starter_hook
+        data[starter_hook_callsite : starter_hook_callsite + 4] = encode_thumb_bl(
+            starter_hook_callsite,
+            starter_cave_offset,
+        )
+        changes.append(
+            f"0x{starter_hook_callsite:06X}: replaced with BL 0x{starter_cave_offset:06X} "
+            "(canonical FRLG starter direct hook)"
+        )
+        changes.append(
+            f"0x{starter_cave_offset:06X}: wrote {len(starter_hook)}-byte canonical FRLG starter hook "
+            f"(reroll_attempts={plan.reroll_attempts}, retry_target=0x{starter_retry_target:06X})"
         )
 
     for layout, wrapper_hook_callsite, wrapper_retry_target in outer_wrapper_sites:
