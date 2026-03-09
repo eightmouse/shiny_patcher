@@ -6,7 +6,6 @@ import ctypes
 import io
 import sys
 import threading
-from collections import deque
 from ctypes import wintypes
 from pathlib import Path
 from queue import Empty, Queue
@@ -48,8 +47,7 @@ COLORS = {
 
 WINDOW_SIZE = "920x620"
 FILES_HEIGHT = 196
-LIVE_LOG_HEIGHT = 84
-LOG_HEIGHT = 116
+LIVE_LOG_HEIGHT = 188
 CORNER_RADIUS = 18
 WM_DROPFILES = 0x0233
 GWL_WNDPROC = -4
@@ -145,6 +143,152 @@ class ThemedScrollbar(tk.Canvas):
         self._command("moveto", target)
 
 
+
+
+class RoundedButton(tk.Canvas):
+    def __init__(self, parent: tk.Misc, text: str, command: object, *, fill: str, hover_fill: str, text_fill: str, height: int = 44, radius: int = 16) -> None:
+        super().__init__(
+            parent,
+            height=height,
+            bg=parent.cget("bg"),
+            highlightthickness=0,
+            bd=0,
+            relief="flat",
+            takefocus=0,
+            cursor="hand2",
+        )
+        self._text = text
+        self._command = command
+        self._fill = fill
+        self._hover_fill = hover_fill
+        self._text_fill = text_fill
+        self._current_fill = fill
+        self._radius = radius
+        self._state = tk.NORMAL
+        self.bind("<Configure>", self._redraw, add="+")
+        self.bind("<Enter>", self._on_enter, add="+")
+        self.bind("<Leave>", self._on_leave, add="+")
+        self.bind("<Button-1>", self._on_click, add="+")
+
+    def configure(self, cnf: dict | None = None, **kwargs: object) -> tuple[str, ...] | None:
+        options = dict(cnf or {})
+        options.update(kwargs)
+        if "text" in options:
+            self._text = str(options.pop("text"))
+        if "bg" in options:
+            self._fill = str(options.pop("bg"))
+            self._current_fill = self._fill
+        if "activebackground" in options:
+            self._hover_fill = str(options.pop("activebackground"))
+        if "fg" in options:
+            self._text_fill = str(options.pop("fg"))
+        if "activeforeground" in options:
+            options.pop("activeforeground")
+        if "state" in options:
+            self._state = str(options.pop("state"))
+        result = super().configure(**options) if options else None
+        self._redraw()
+        return result
+
+    config = configure
+
+    def _rounded_rect(self, x1: float, y1: float, x2: float, y2: float, radius: float, *, fill: str) -> None:
+        radius = max(1.0, min(radius, (x2 - x1) / 2.0, (y2 - y1) / 2.0))
+        self.create_arc(x1, y1, x1 + radius * 2, y1 + radius * 2, start=90, extent=90, fill=fill, outline=fill)
+        self.create_arc(x2 - radius * 2, y1, x2, y1 + radius * 2, start=0, extent=90, fill=fill, outline=fill)
+        self.create_arc(x1, y2 - radius * 2, x1 + radius * 2, y2, start=180, extent=90, fill=fill, outline=fill)
+        self.create_arc(x2 - radius * 2, y2 - radius * 2, x2, y2, start=270, extent=90, fill=fill, outline=fill)
+        self.create_rectangle(x1 + radius, y1, x2 - radius, y2, fill=fill, outline=fill)
+        self.create_rectangle(x1, y1 + radius, x2, y2 - radius, fill=fill, outline=fill)
+
+    def _redraw(self, _event: tk.Event | None = None) -> None:
+        self.delete("all")
+        width = max(self.winfo_width(), 38)
+        height = max(self.winfo_height(), 36)
+        fill = self._current_fill if self._state != tk.DISABLED else COLORS["card_alt"]
+        self._rounded_rect(0, 0, width, height, self._radius, fill=fill)
+        self.create_text(width / 2, height / 2, text=self._text, fill=self._text_fill, font=("Segoe UI Semibold", 11))
+
+    def _rounded_rect(self, x1: float, y1: float, x2: float, y2: float, radius: float, *, fill: str) -> None:
+        radius = max(1.0, min(radius, (x2 - x1) / 2.0, (y2 - y1) / 2.0))
+        self.create_arc(x1, y1, x1 + radius * 2, y1 + radius * 2, start=90, extent=90, fill=fill, outline=fill)
+        self.create_arc(x2 - radius * 2, y1, x2, y1 + radius * 2, start=0, extent=90, fill=fill, outline=fill)
+        self.create_arc(x1, y2 - radius * 2, x1 + radius * 2, y2, start=180, extent=90, fill=fill, outline=fill)
+        self.create_arc(x2 - radius * 2, y2 - radius * 2, x2, y2, start=270, extent=90, fill=fill, outline=fill)
+        self.create_rectangle(x1 + radius, y1, x2 - radius, y2, fill=fill, outline=fill)
+        self.create_rectangle(x1, y1 + radius, x2, y2 - radius, fill=fill, outline=fill)
+
+    def _on_enter(self, _event: tk.Event) -> None:
+        if self._state == tk.DISABLED:
+            return
+        self._current_fill = self._hover_fill
+        self._redraw()
+
+    def _on_leave(self, _event: tk.Event) -> None:
+        self._current_fill = self._fill
+        self._redraw()
+
+    def _on_click(self, _event: tk.Event) -> None:
+        if self._state == tk.DISABLED:
+            return
+        self._command()
+
+
+class TitlebarIconButton(tk.Canvas):
+    def __init__(self, parent: tk.Misc, kind: str, command: object, *, hover_fill: str) -> None:
+        super().__init__(
+            parent,
+            width=38,
+            height=28,
+            bg=COLORS["titlebar"],
+            highlightthickness=0,
+            bd=0,
+            relief="flat",
+            takefocus=0,
+            cursor="hand2",
+        )
+        self._kind = kind
+        self._command = command
+        self._fill = COLORS["titlebar"]
+        self._hover_fill = hover_fill
+        self.bind("<Configure>", self._redraw, add="+")
+        self.bind("<Enter>", self._on_enter, add="+")
+        self.bind("<Leave>", self._on_leave, add="+")
+        self.bind("<Button-1>", self._on_click, add="+")
+        self._redraw()
+
+    def _redraw(self, _event: tk.Event | None = None) -> None:
+        self.delete("all")
+        width = max(self.winfo_width(), 38)
+        height = max(self.winfo_height(), 28)
+        self._rounded_rect(0, 0, width, height, 10, fill=self._fill)
+        if self._kind == "minimize":
+            self.create_line(width / 2 - 7, height / 2 + 4, width / 2 + 7, height / 2 + 4, fill=COLORS["text"], width=2)
+        else:
+            self.create_line(width / 2 - 6, height / 2 - 6, width / 2 + 6, height / 2 + 6, fill=COLORS["text"], width=2)
+            self.create_line(width / 2 + 6, height / 2 - 6, width / 2 - 6, height / 2 + 6, fill=COLORS["text"], width=2)
+
+    def _rounded_rect(self, x1: float, y1: float, x2: float, y2: float, radius: float, *, fill: str) -> None:
+        radius = max(1.0, min(radius, (x2 - x1) / 2.0, (y2 - y1) / 2.0))
+        self.create_arc(x1, y1, x1 + radius * 2, y1 + radius * 2, start=90, extent=90, fill=fill, outline=fill)
+        self.create_arc(x2 - radius * 2, y1, x2, y1 + radius * 2, start=0, extent=90, fill=fill, outline=fill)
+        self.create_arc(x1, y2 - radius * 2, x1 + radius * 2, y2, start=180, extent=90, fill=fill, outline=fill)
+        self.create_arc(x2 - radius * 2, y2 - radius * 2, x2, y2, start=270, extent=90, fill=fill, outline=fill)
+        self.create_rectangle(x1 + radius, y1, x2 - radius, y2, fill=fill, outline=fill)
+        self.create_rectangle(x1, y1 + radius, x2, y2 - radius, fill=fill, outline=fill)
+
+    def _on_enter(self, _event: tk.Event) -> None:
+        self._fill = self._hover_fill
+        self._redraw()
+
+    def _on_leave(self, _event: tk.Event) -> None:
+        self._fill = COLORS["titlebar"]
+        self._redraw()
+
+    def _on_click(self, _event: tk.Event) -> None:
+        self._command()
+
+
 class KiraPatchApp:
     def __init__(self, root: tk.Tk, startup_paths: list[Path]) -> None:
         self.root = root
@@ -158,7 +302,6 @@ class KiraPatchApp:
         self.paths: list[Path] = []
         self.worker: threading.Thread | None = None
         self.log_queue: Queue[tuple[str, object]] = Queue()
-        self.live_log_lines: deque[str] = deque(maxlen=8)
         self.odds_choice = tk.StringVar(value="256")
         self.custom_odds = tk.StringVar(value="256")
         self.status_text = tk.StringVar(value="Drag .gba files into the window or click Add ROMs.")
@@ -173,9 +316,8 @@ class KiraPatchApp:
         self._drag_offset = (0, 0)
 
         self.file_buttons: list[tk.Button] = []
-        self.patch_button: tk.Button | None = None
+        self.patch_button: RoundedButton | None = None
         self.log_text: tk.Text | None = None
-        self.live_log_text: tk.Text | None = None
         self.odds_combo: ttk.Combobox | None = None
         self.custom_entry: tk.Entry | None = None
         self.file_list: tk.Listbox | None = None
@@ -262,41 +404,8 @@ class KiraPatchApp:
 
         self._hwnd = self.root.winfo_id()
         try:
-            user32 = ctypes.windll.user32
             dwmapi = ctypes.windll.dwmapi
         except AttributeError:
-            return
-
-        user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
-        user32.GetWindowLongW.restype = ctypes.c_long
-        user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
-        user32.SetWindowLongW.restype = ctypes.c_long
-        user32.SetWindowPos.argtypes = [
-            wintypes.HWND,
-            wintypes.HWND,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_uint,
-        ]
-        user32.SetWindowPos.restype = wintypes.BOOL
-
-        try:
-            current_style = user32.GetWindowLongW(self._hwnd, GWL_STYLE)
-            target_style = (current_style & ~(WS_CAPTION | WS_THICKFRAME | WS_MAXIMIZEBOX)) | WS_MINIMIZEBOX | WS_SYSMENU
-            if target_style != current_style:
-                user32.SetWindowLongW(self._hwnd, GWL_STYLE, target_style)
-            user32.SetWindowPos(
-                wintypes.HWND(self._hwnd),
-                wintypes.HWND(0),
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-            )
-        except OSError:
             return
 
         def set_attr(attribute: int, value: int) -> None:
@@ -355,12 +464,12 @@ class KiraPatchApp:
         body = tk.Frame(shell, bg=COLORS["bg"])
         body.grid(row=1, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
-        body.rowconfigure(2, weight=1)
+        body.rowconfigure(0, weight=1)
 
         container = tk.Frame(body, bg=COLORS["bg"], padx=16, pady=16)
         container.grid(row=0, column=0, sticky="nsew")
         container.columnconfigure(0, weight=1)
-        container.rowconfigure(2, weight=1)
+        container.rowconfigure(1, weight=1)
 
         header = self._make_card(container)
         header.grid(row=0, column=0, sticky="ew")
@@ -473,7 +582,7 @@ class KiraPatchApp:
         settings_card = self._make_card(panels)
         settings_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
         settings_card.columnconfigure(1, weight=1)
-        settings_card.rowconfigure(7, weight=1)
+        settings_card.rowconfigure(6, weight=1)
 
         tk.Label(
             settings_card,
@@ -541,18 +650,19 @@ class KiraPatchApp:
             font=("Segoe UI", 9),
             wraplength=360,
             justify="left",
-        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(12, 14))
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(12, 12))
 
-        self.patch_button = self._make_button(settings_card, "Patch", self.start_patch, accent=True)
-        self.patch_button.grid(row=5, column=0, columnspan=2, sticky="ew")
-
-        tk.Label(
+        self.patch_button = RoundedButton(
             settings_card,
-            text="Live Output",
-            bg=COLORS["card"],
-            fg=COLORS["text"],
-            font=("Segoe UI Semibold", 11),
-        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 6))
+            "Patch",
+            self.start_patch,
+            fill=COLORS["accent"],
+            hover_fill=COLORS["accent_active"],
+            text_fill=COLORS["text"],
+            height=46,
+            radius=18,
+        )
+        self.patch_button.grid(row=5, column=0, columnspan=2, sticky="ew")
 
         live_shell = tk.Frame(
             settings_card,
@@ -562,59 +672,14 @@ class KiraPatchApp:
             bd=0,
             height=LIVE_LOG_HEIGHT,
         )
-        live_shell.grid(row=7, column=0, columnspan=2, sticky="nsew")
+        live_shell.grid(row=6, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
         live_shell.grid_propagate(False)
         live_shell.columnconfigure(0, weight=1)
         live_shell.rowconfigure(0, weight=1)
 
-        self.live_log_text = tk.Text(
-            live_shell,
-            height=4,
-            wrap="word",
-            state="disabled",
-            bg=COLORS["field"],
-            fg=COLORS["text"],
-            insertbackground=COLORS["text"],
-            relief="flat",
-            highlightthickness=0,
-            bd=0,
-            font=("Consolas", 9),
-        )
-        self.live_log_text.grid(row=0, column=0, sticky="nsew")
-
-        live_scroll = self._make_scrollbar(live_shell, self.live_log_text.yview)
-        live_scroll.grid(row=0, column=1, sticky="ns")
-        self.live_log_text.configure(yscrollcommand=live_scroll.set)
-
-        log_card = self._make_card(container)
-        log_card.grid(row=2, column=0, sticky="nsew", pady=(8, 0))
-        log_card.columnconfigure(0, weight=1)
-        log_card.rowconfigure(1, weight=1)
-
-        tk.Label(
-            log_card,
-            text="Patch Log",
-            bg=COLORS["card"],
-            fg=COLORS["text"],
-            font=("Segoe UI Semibold", 12),
-        ).grid(row=0, column=0, sticky="w")
-
-        log_shell = tk.Frame(
-            log_card,
-            bg=COLORS["field"],
-            highlightbackground=COLORS["border"],
-            highlightthickness=1,
-            bd=0,
-            height=LOG_HEIGHT,
-        )
-        log_shell.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
-        log_shell.grid_propagate(False)
-        log_shell.columnconfigure(0, weight=1)
-        log_shell.rowconfigure(0, weight=1)
-
         self.log_text = tk.Text(
-            log_shell,
-            height=8,
+            live_shell,
+            height=9,
             wrap="word",
             state="disabled",
             bg=COLORS["field"],
@@ -627,9 +692,9 @@ class KiraPatchApp:
         )
         self.log_text.grid(row=0, column=0, sticky="nsew")
 
-        log_scroll = self._make_scrollbar(log_shell, self.log_text.yview)
-        log_scroll.grid(row=0, column=1, sticky="ns")
-        self.log_text.configure(yscrollcommand=log_scroll.set)
+        live_scroll = self._make_scrollbar(live_shell, self.log_text.yview)
+        live_scroll.grid(row=0, column=1, sticky="ns")
+        self.log_text.configure(yscrollcommand=live_scroll.set)
 
         status = tk.Label(
             container,
@@ -640,19 +705,19 @@ class KiraPatchApp:
             justify="left",
             font=("Segoe UI", 9),
         )
-        status.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        status.grid(row=2, column=0, sticky="ew", pady=(12, 0))
 
     def _build_titlebar(self, parent: tk.Misc) -> tk.Frame:
-        titlebar = tk.Frame(parent, bg=COLORS["titlebar"], height=42)
+        titlebar = tk.Frame(parent, bg=COLORS["titlebar"], height=44)
         titlebar.grid_propagate(False)
         titlebar.columnconfigure(1, weight=1)
 
         if self._logo_image is not None:
             icon_label = tk.Label(titlebar, image=self._logo_image, bg=COLORS["titlebar"])
-            icon_label.grid(row=0, column=0, sticky="w", padx=(12, 8), pady=6)
+            icon_label.grid(row=0, column=0, sticky="w", padx=(12, 8), pady=5)
         else:
             icon_label = tk.Label(titlebar, text="", bg=COLORS["titlebar"], width=2)
-            icon_label.grid(row=0, column=0, sticky="w", padx=(12, 8), pady=6)
+            icon_label.grid(row=0, column=0, sticky="w", padx=(12, 8), pady=5)
 
         title_label = tk.Label(
             titlebar,
@@ -664,11 +729,11 @@ class KiraPatchApp:
         title_label.grid(row=0, column=1, sticky="w")
 
         controls = tk.Frame(titlebar, bg=COLORS["titlebar"])
-        controls.grid(row=0, column=2, sticky="e")
+        controls.grid(row=0, column=2, sticky="e", padx=(0, 8), pady=8)
 
-        minimize_button = self._make_title_button(controls, "_", self._minimize_window)
-        minimize_button.grid(row=0, column=0)
-        close_button = self._make_title_button(controls, "X", self._on_close, close_button=True)
+        minimize_button = TitlebarIconButton(controls, "minimize", self._minimize_window, hover_fill=COLORS["title_button_hover"])
+        minimize_button.grid(row=0, column=0, padx=(0, 4))
+        close_button = TitlebarIconButton(controls, "close", self._on_close, hover_fill=COLORS["title_close_hover"])
         close_button.grid(row=0, column=1)
 
         for widget in (titlebar, icon_label, title_label):
@@ -709,26 +774,6 @@ class KiraPatchApp:
             cursor="hand2",
             takefocus=0,
             font=("Segoe UI Semibold", 10),
-        )
-
-    def _make_title_button(self, parent: tk.Misc, text: str, command: object, close_button: bool = False) -> tk.Button:
-        active_bg = COLORS["title_close_hover"] if close_button else COLORS["title_button_hover"]
-        return tk.Button(
-            parent,
-            text=text,
-            command=command,
-            bg=COLORS["titlebar"],
-            fg=COLORS["text"],
-            activebackground=active_bg,
-            activeforeground=COLORS["text"],
-            relief="flat",
-            bd=0,
-            highlightthickness=0,
-            width=4,
-            pady=7,
-            cursor="hand2",
-            takefocus=0,
-            font=("Segoe UI Semibold", 11),
         )
 
     def _make_scrollbar(self, parent: tk.Misc, command: object) -> ThemedScrollbar:
@@ -927,28 +972,13 @@ class KiraPatchApp:
         self._update_file_count()
         self.status_text.set("ROM list cleared.")
 
-    def _append_live_log(self, text: str) -> None:
-        if self.live_log_text is None:
-            return
-        for raw_line in text.replace("\r", "\n").splitlines():
-            line = raw_line.strip()
-            if line:
-                self.live_log_lines.append(line)
-        if not self.live_log_lines:
-            self.live_log_lines.append("Waiting to patch...")
-        self.live_log_text.configure(state="normal")
-        self.live_log_text.delete("1.0", "end")
-        self.live_log_text.insert("end", "\n".join(self.live_log_lines))
-        self.live_log_text.see("end")
-        self.live_log_text.configure(state="disabled")
-
     def _append_log(self, text: str) -> None:
-        if self.log_text is not None:
-            self.log_text.configure(state="normal")
-            self.log_text.insert("end", text)
-            self.log_text.see("end")
-            self.log_text.configure(state="disabled")
-        self._append_live_log(text)
+        if self.log_text is None:
+            return
+        self.log_text.configure(state="normal")
+        self.log_text.insert("end", text)
+        self.log_text.see("end")
+        self.log_text.configure(state="disabled")
 
     def _selected_odds(self) -> int | None:
         raw = self.custom_odds.get().strip() if self.odds_choice.get() == "Custom" else self.odds_choice.get()
@@ -999,7 +1029,10 @@ class KiraPatchApp:
             messagebox.showerror("KiraPatch", "Enter a valid positive odds value.")
             return
 
-        self.live_log_lines.clear()
+        if self.log_text is not None:
+            self.log_text.configure(state="normal")
+            self.log_text.delete("1.0", "end")
+            self.log_text.configure(state="disabled")
         self._append_log(f"\n=== Starting patch run (auto mode, 1/{odds}) ===\n")
         self.status_text.set("Patching...")
         self._set_busy(True)
@@ -1072,3 +1105,6 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+
