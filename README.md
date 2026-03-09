@@ -71,6 +71,14 @@ Do not use:
 - `legacy`
 
 ## How Do I Patch The .rom?
+### Standalone Windows EXE
+Run `dist/KiraPatch.exe` after building it with `build_standalone.bat`.
+
+The EXE opens a simple GUI where you can:
+- add one or more `.gba` ROMs
+- choose the odds you want
+- patch them in `auto` mode
+
 ### CLI
 ```bash
 python shiny_patcher.py "Pokemon Emerald.gba" --odds 256 --mode auto
