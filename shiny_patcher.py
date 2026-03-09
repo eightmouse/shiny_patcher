@@ -224,9 +224,10 @@ FIXED_WRAPPER_LAYOUTS = (
         pre_sig=(0x2001, 0x9000, 0x9401, 0x2000, 0x9002, 0x9003, 0x9804, 0x1C39, 0x9A05, 0x4653),
         post_sig=(0xB006, 0xBC38, 0x4698, 0x46A1, 0x46AA, 0xBCF0, 0xBC01, 0x4700),
         retry_offset=0x0E,
-        counter_sp_word=0,
+        counter_sp_word=6,
         done_halfwords=(0xB006, 0xBC38, 0x4698, 0x46A1, 0x46AA, 0xBCF0, 0xBC01, 0x4700),
         pokemon_sp_word=4,
+        restore_sp_word_from_reg=(6, 8),
     ),
     WrapperHookLayout(
         name="fixed-personality wrapper C",
@@ -236,9 +237,10 @@ FIXED_WRAPPER_LAYOUTS = (
         pre_sig=(0x2001, 0x9000, 0x9401, 0x9002, 0x9503, 0x4640, 0x1C31, 0x1C3A, 0x2320),
         post_sig=(0xB004, 0xBC08, 0x4698, 0xBCF0, 0xBC01, 0x4700),
         retry_offset=0x12,
-        counter_sp_word=0,
+        counter_sp_word=4,
         done_halfwords=(0xB004, 0xBC08, 0x4698, 0xBCF0, 0xBC01, 0x4700),
         pokemon_reg=8,
+        restore_sp_word_from_reg=(4, 8),
     ),
 )
 
@@ -832,6 +834,7 @@ def build_canonical_create_mon_hook(
     counter_sp_word: int,
     restore_r3_sp_word: int,
     resume_halfwords: tuple[int, ...],
+    skip_caller_returns: tuple[int, ...],
 ) -> bytes:
     hook = bytearray()
     labels: dict[str, int] = {}
@@ -857,7 +860,13 @@ def build_canonical_create_mon_hook(
         fixups.append(("bcond", pos, label, cond_code))
 
     emit_hw(0x2C00)  # cmp r4,#0
-    emit_b_cond(1, "done")  # bne done (fixed-personality callers are handled by higher-level hooks)
+    emit_b_cond(0, "pid_check")  # beq pid_check (non-fixed-personality caller)
+    emit_hw(0x980C)  # ldr r0,[sp,#0x30] (saved caller return address)
+    for idx, _ in enumerate(skip_caller_returns):
+        emit_ldr_literal(1, f"skip_return_{idx}")
+        emit_hw(0x4288)  # cmp r0,r1
+        emit_b_cond(0, "done")  # beq done (handled by an outer fixed-personality hook)
+    mark("pid_check")
     emit_hw(0x4640)  # mov r0,r8 (struct Pokemon *)
     emit_hw(0x6802)  # ldr r2,[r0]    (PID)
     emit_hw(0x6843)  # ldr r3,[r0,#4] (OTID)
@@ -905,6 +914,9 @@ def build_canonical_create_mon_hook(
     hook.extend(counter_value.to_bytes(4, "little"))
     mark("counter_magic_hi")
     hook.extend((0x0000A5A5).to_bytes(4, "little"))
+    for idx, skip_return in enumerate(skip_caller_returns):
+        mark(f"skip_return_{idx}")
+        hook.extend((skip_return & 0xFFFFFFFF).to_bytes(4, "little"))
 
     for kind, pos, label, extra in fixups:
         if label not in labels:
@@ -1066,6 +1078,11 @@ def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list
         data,
         create_mon_start,
     )
+    outer_wrapper_sites = [site for site in wrapper_sites if site[0].name != "fixed-personality wrapper C"]
+    skip_caller_returns = tuple(
+        ((ROM_EXEC_BASE + hook_callsite) | 1) & 0xFFFFFFFF
+        for layout, hook_callsite, _ in outer_wrapper_sites
+    )
     primary_create_box_call = primary_hook_callsite - 4
     create_box_target = decode_thumb_bl_target(data, primary_create_box_call)
     hook_sites: list[tuple[int, int, int, int, tuple[int, ...]]] = [
@@ -1111,6 +1128,7 @@ def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list
             counter_sp_word=counter_sp_word,
             restore_r3_sp_word=restore_r3_sp_word,
             resume_halfwords=resume_halfwords,
+            skip_caller_returns=skip_caller_returns,
         )
 
         data[cave_offset : cave_offset + len(hook)] = hook
@@ -1124,7 +1142,7 @@ def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list
             f"(reroll_attempts={plan.reroll_attempts}, retry_target=0x{retry_target:06X})"
         )
 
-    for layout, wrapper_hook_callsite, wrapper_retry_target in wrapper_sites:
+    for layout, wrapper_hook_callsite, wrapper_retry_target in outer_wrapper_sites:
         wrapper_cave_offset = find_code_cave_near(data, wrapper_hook_callsite, hook_payload_size)
         wrapper_cave = data[wrapper_cave_offset : wrapper_cave_offset + hook_payload_size]
         if any(b not in (0x00, 0xFF) for b in wrapper_cave):
