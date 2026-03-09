@@ -47,9 +47,10 @@ COLORS = {
 }
 
 WINDOW_SIZE = "920x620"
-FILES_HEIGHT = 204
-LIVE_LOG_HEIGHT = 92
+FILES_HEIGHT = 196
+LIVE_LOG_HEIGHT = 84
 LOG_HEIGHT = 116
+CORNER_RADIUS = 18
 WM_DROPFILES = 0x0233
 GWL_WNDPROC = -4
 GWL_STYLE = -16
@@ -94,13 +95,63 @@ def colorref_from_hex(hex_color: str) -> int:
     return red | (green << 8) | (blue << 16)
 
 
+class ThemedScrollbar(tk.Canvas):
+    def __init__(self, parent: tk.Misc, command: object, width: int = 12) -> None:
+        super().__init__(
+            parent,
+            width=width,
+            bg=COLORS["field"],
+            highlightthickness=0,
+            bd=0,
+            relief="flat",
+            takefocus=0,
+            cursor="hand2",
+        )
+        self._command = command
+        self._first = 0.0
+        self._last = 1.0
+        self._thumb = self.create_rectangle(0, 0, width, 0, fill=COLORS["card_alt"], outline=COLORS["card_alt"])
+        self.bind("<Configure>", self._redraw, add="+")
+        self.bind("<Button-1>", self._jump, add="+")
+        self.bind("<B1-Motion>", self._drag, add="+")
+
+    def set(self, first: str | float, last: str | float) -> None:
+        self._first = float(first)
+        self._last = float(last)
+        self._redraw()
+
+    def _redraw(self, _event: tk.Event | None = None) -> None:
+        width = max(self.winfo_width(), 12)
+        height = max(self.winfo_height(), 1)
+        if self._last - self._first >= 0.999:
+            self.coords(self._thumb, 0, 0, 0, 0)
+            return
+        thumb_height = max(28.0, (self._last - self._first) * height)
+        top = min(height - thumb_height, max(0.0, self._first * height))
+        bottom = top + thumb_height
+        self.coords(self._thumb, 2, top + 2, width - 2, bottom - 2)
+
+    def _jump(self, event: tk.Event) -> None:
+        self._move_to(event.y)
+
+    def _drag(self, event: tk.Event) -> None:
+        self._move_to(event.y)
+
+    def _move_to(self, y: int) -> None:
+        height = max(self.winfo_height(), 1)
+        span = self._last - self._first
+        target = (y / height) - (span / 2.0)
+        target = max(0.0, min(1.0 - span, target))
+        self._command("moveto", target)
+
+
 class KiraPatchApp:
     def __init__(self, root: tk.Tk, startup_paths: list[Path]) -> None:
         self.root = root
         self.root.title("KiraPatch")
         self.root.geometry(WINDOW_SIZE)
         self.root.resizable(False, False)
-        self.root.configure(bg=COLORS["border"])
+        self.root.configure(bg=COLORS["bg"])
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
 
@@ -203,6 +254,7 @@ class KiraPatchApp:
             except tk.TclError:
                 return
         self._apply_window_frame()
+        self._apply_rounded_region()
 
     def _apply_window_frame(self) -> None:
         if sys.platform != "win32":
@@ -267,12 +319,32 @@ class KiraPatchApp:
         try:
             set_attr(DWMWA_CAPTION_COLOR, colorref_from_hex(COLORS["titlebar"]))
             set_attr(DWMWA_TEXT_COLOR, colorref_from_hex(COLORS["text"]))
-            set_attr(DWMWA_BORDER_COLOR, colorref_from_hex(COLORS["border"]))
+            set_attr(DWMWA_BORDER_COLOR, colorref_from_hex(COLORS["bg"]))
         except OSError:
             pass
 
+    def _apply_rounded_region(self) -> None:
+        if sys.platform != "win32":
+            return
+
+        self._hwnd = self.root.winfo_id()
+        width = self.root.winfo_width()
+        height = self.root.winfo_height()
+        if width <= 1 or height <= 1:
+            return
+
+        user32 = ctypes.windll.user32
+        gdi32 = ctypes.windll.gdi32
+        gdi32.CreateRoundRectRgn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+        gdi32.CreateRoundRectRgn.restype = wintypes.HRGN
+        user32.SetWindowRgn.argtypes = [wintypes.HWND, wintypes.HRGN, wintypes.BOOL]
+        user32.SetWindowRgn.restype = ctypes.c_int
+
+        region = gdi32.CreateRoundRectRgn(0, 0, width + 1, height + 1, CORNER_RADIUS, CORNER_RADIUS)
+        user32.SetWindowRgn(self._hwnd, region, True)
+
     def _build_ui(self) -> None:
-        shell = tk.Frame(self.root, bg=COLORS["border"], padx=1, pady=1)
+        shell = tk.Frame(self.root, bg=COLORS["bg"], padx=0, pady=0)
         shell.grid(row=0, column=0, sticky="nsew")
         shell.columnconfigure(0, weight=1)
         shell.rowconfigure(1, weight=1)
@@ -317,7 +389,7 @@ class KiraPatchApp:
         ).grid(row=1, column=1, sticky="w", pady=(4, 0))
 
         panels = tk.Frame(container, bg=COLORS["bg"])
-        panels.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        panels.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         panels.columnconfigure(0, weight=1, uniform="panel")
         panels.columnconfigure(1, weight=1, uniform="panel")
         panels.rowconfigure(0, weight=1)
@@ -377,7 +449,7 @@ class KiraPatchApp:
         self.file_list.configure(yscrollcommand=file_scroll.set)
 
         footer_row = tk.Frame(files_card, bg=COLORS["card"])
-        footer_row.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        footer_row.grid(row=3, column=0, sticky="ew", pady=(8, 0))
         footer_row.columnconfigure(0, weight=1, uniform="file_buttons")
         footer_row.columnconfigure(1, weight=1, uniform="file_buttons")
         footer_row.columnconfigure(2, weight=1, uniform="file_buttons")
@@ -396,7 +468,7 @@ class KiraPatchApp:
             bg=COLORS["card"],
             fg=COLORS["muted"],
             font=("Segoe UI", 9),
-        ).grid(row=4, column=0, sticky="w", pady=(8, 0))
+        ).grid(row=4, column=0, sticky="w", pady=(6, 0))
 
         settings_card = self._make_card(panels)
         settings_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
@@ -480,7 +552,7 @@ class KiraPatchApp:
             bg=COLORS["card"],
             fg=COLORS["text"],
             font=("Segoe UI Semibold", 11),
-        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(10, 6))
+        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 6))
 
         live_shell = tk.Frame(
             settings_card,
@@ -515,7 +587,7 @@ class KiraPatchApp:
         self.live_log_text.configure(yscrollcommand=live_scroll.set)
 
         log_card = self._make_card(container)
-        log_card.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
+        log_card.grid(row=2, column=0, sticky="nsew", pady=(8, 0))
         log_card.columnconfigure(0, weight=1)
         log_card.rowconfigure(1, weight=1)
 
@@ -659,21 +731,8 @@ class KiraPatchApp:
             font=("Segoe UI Semibold", 11),
         )
 
-    def _make_scrollbar(self, parent: tk.Misc, command: object) -> tk.Scrollbar:
-        return tk.Scrollbar(
-            parent,
-            orient="vertical",
-            command=command,
-            bg=COLORS["field"],
-            troughcolor=COLORS["bg"],
-            activebackground=COLORS["card_alt"],
-            highlightbackground=COLORS["field"],
-            highlightcolor=COLORS["field"],
-            elementborderwidth=0,
-            borderwidth=0,
-            relief="flat",
-            width=12,
-        )
+    def _make_scrollbar(self, parent: tk.Misc, command: object) -> ThemedScrollbar:
+        return ThemedScrollbar(parent, command)
 
     def _start_window_drag(self, event: tk.Event) -> None:
         self._drag_offset = (event.x_root - self.root.winfo_x(), event.y_root - self.root.winfo_y())
