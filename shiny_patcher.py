@@ -805,7 +805,7 @@ def find_frlg_gift_create_mon_sites(
                 hook_callsite=off + 4,
                 skip_return_offset=off + 4,
                 retry_target=retry_target,
-                counter_sp_word=4,
+                counter_sp_word=0,
                 resume_halfwords=(0xA804, 0x4641),
                 pokemon_reg=7,
             )
