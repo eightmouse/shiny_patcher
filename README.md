@@ -1,13 +1,17 @@
-﻿![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
 ![Target](https://img.shields.io/badge/Target-GBA-orange)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
 
-# Disclaimer
-This project is for educational and archival purposes.
+# KiraPatch
 
-# Gen 3 Shiny Odds CLI Patcher
-KiraPatch is a CLI utility for modifying shiny encounter rates in Generation 3 Pokemon ROMs.
+## Disclaimer
+KiraPatch is for educational and archival use.
+
+Use it only with ROMs you legally own and dump yourself. Patch clean ROMs only.
+
+## What Is It?
+KiraPatch is a patcher for Generation 3 Pokemon GBA games that raises shiny odds while keeping the game on its normal data-writing path.
 
 Supported games:
 - FireRed
@@ -16,96 +20,102 @@ Supported games:
 - Sapphire
 - Emerald
 
-Works with supported USA/EU clean revisions listed below.
+Supported clean USA/EU revisions are detected by CRC32 before patching. If the ROM is not a known clean match, patching is refused.
 
-## Safety model
-- CRC32 ROM auto-detection (only known clean revisions are accepted)
-- Strict byte validation at every patch offset before writing
-- Never overwrites the input ROM (always writes a new output file)
+## Who Is It For And Why?
+KiraPatch is for players who want higher shiny odds across normal gameplay without turning shinies into fake visual-only results.
 
-If CRC32 is unknown, patching is refused.
+It is meant for people who want things like:
+- shiny starters
+- shiny wild encounters
+- shiny static or gift encounters
+- no Bad Eggs from broken writes
+- no PKHeX legality errors caused by a visual-only threshold hack
 
-## Usage
+## How Does It Work?
+The recommended modes are `auto`, `canonical`, and `reroll`.
+
+In those modes, KiraPatch does not just change the shiny check threshold. Instead, it patches the Pokemon generation flow so the game keeps rerolling until it gets a real Gen 3 shiny result, then lets the game store that Pokemon through its normal path.
+
+That means:
+- it patches real shiny generation, not just visuals
+- it keeps the normal `SetMonData` write path to avoid checksum corruption and Bad Eggs
+- it validates the ROM before writing anything
+- it always writes a new output ROM and does not overwrite the input ROM
+
+Important note about high rates:
+- `1/16` works, but it can cause noticeable pauses because canonical rerolls are expensive
+- `1/128` or `1/256` are much smoother for normal play
+
+Legacy modes:
+- `native` and `legacy` are the older threshold-style patch modes
+- they are not the recommended choice if legality matters
+
+## Are The Shinies Visual Or Not?
+No. In `auto` or `canonical`, the shinies are real shinies, not visual-only shinies.
+
+If the game shows the Pokemon as shiny, save editors like PKHeX should also see it as shiny.
+
+## Are They Legal?
+Yes, that is the point of canonical mode.
+
+In `auto`, `canonical`, or `reroll`, KiraPatch aims to keep the generated Pokemon legal by using canonical rerolls instead of a fake visual threshold patch. On supported ROMs, starters, wild encounters, and the tested static or gift paths are intended to remain PKHeX-legal.
+
+If legality matters, use:
+- `auto`
+- `canonical`
+- `reroll`
+
+Do not use:
+- `native`
+- `legacy`
+
+## How Do I Patch The .rom?
+### CLI
 ```bash
-python shiny_patcher.py "Pokemon Emerald.gba" --odds 4096
+python shiny_patcher.py "Pokemon Emerald.gba" --odds 256 --mode auto
 ```
 
-Guided mode:
+### Guided mode
 ```bash
 python shiny_patcher.py --guided
 ```
 
-If no `input_rom` is provided, guided mode starts automatically:
+If no ROM path is provided, guided mode starts automatically:
 ```bash
 python shiny_patcher.py
 ```
 
-### Arguments
-- `input_rom`: source `.gba` ROM path
-- `--odds N`: desired shiny rate as `1 in N` (required)
-- `--mode {auto,canonical,reroll,native,legacy}`: patch strategy (default: `auto`)
-- `--output PATH`: optional output ROM path
-- `--overwrite-output`: allow replacing an existing output file
-- `--guided`: interactive wizard, scans a folder for ROMs and guides patching
-- `--folder PATH`: folder to scan in guided mode (default: current directory)
+### Windows drag-and-drop
+Use [KiraPatch.bat](KiraPatch.bat).
 
-Default output naming:
-- `<input_stem>.shiny_1inN.gba`
+You can drag one or more `.gba` files onto it. The launcher reads settings from [patcher_config.ini](patcher_config.ini).
 
-## Mode behavior
-- `auto`: recommended. Uses canonical PID rerolls for boosted shiny odds.
-- `canonical`: canonical PID rerolls (same behavior as `auto`).
-  - Extremely high requests (for example `1/1`) are capped for stability and will print a warning.
-- `reroll`: alias of `canonical` for backwards compatibility.
-- `native`: old threshold patch mode.
-  - Max representable threshold is `255`, so best native rate is about `1/257`.
-  - Requests above that rate (for example `1/256`, `1/16`) return an error.
-- `legacy`: alias of `native`.
-
-Canonical reroll behavior:
-- Patches the Gen 3 PID generation routine (not visual-only shiny checks).
-- Uses the game's own `SetMonData` write path to avoid checksum corruption / Bad Eggs.
-- Resulting shinies are canonical and PKHeX-valid when shiny in-game.
-- Effective odds are approximate to the nearest reroll-attempt count.
-- Rerolls are capped at `1024` per generated Pokemon to avoid severe in-game lag.
-
-Patch summary reports:
-- requested mode
-- applied mode
-- effective shiny bits
-- effective odds
-- canonical reroll attempts (when canonical mode is applied)
-
-## Examples
-```bash
-python shiny_patcher.py "Pokemon FireRed.gba" --odds 2048 --mode auto
-python shiny_patcher.py "Pokemon FireRed.gba" --odds 256 --mode auto
-python shiny_patcher.py "Pokemon Emerald.gba" --odds 16 --mode canonical
-```
-
-## Drag-and-drop launcher (Windows)
-Use [KiraPatch.bat](KiraPatch.bat):
-- Drag one or more `.gba` ROM files onto `KiraPatch.bat`
-- The launcher reads settings from [patcher_config.ini](patcher_config.ini)
-- It calls `shiny_patcher.py` with `--odds` and `--mode`
-
-Config keys:
+Example config:
 ```ini
 odds=256
 mode=auto
 ```
 
-Valid `mode` values:
-- `auto`
-- `canonical`
-- `reroll`
-- `native`
-- `legacy`
+Recommended settings:
+- `mode=auto`
+- `odds=128` or `odds=256` for smoother gameplay
+- `odds=16` if you want very aggressive testing and do not mind pauses
 
-Output naming from launcher:
-- `<input_stem>.shiny_1inN_mode.gba`
+Output naming:
+- CLI: `<input_stem>.shiny_1inN.gba`
+- batch launcher: `<input_stem>.shiny_1inN_mode.gba`
 
-## Supported ROM CRC32 values
+### Main arguments
+- `input_rom`: source `.gba` ROM path
+- `--odds N`: desired shiny rate as `1 in N`
+- `--mode {auto,canonical,reroll,native,legacy}`
+- `--output PATH`: optional output ROM path
+- `--overwrite-output`: allow replacing an existing output file
+- `--guided`: interactive wizard
+- `--folder PATH`: folder to scan in guided mode
+
+### Supported clean ROM CRC32 values
 - `0xF0815EE7` - Pokemon Ruby Version (USA, Europe) Rev 0
 - `0x61641576` - Pokemon Ruby Version (USA, Europe) Rev 1
 - `0xAEAC73E6` - Pokemon Ruby Version (USA, Europe) Rev 2
@@ -118,11 +128,10 @@ Output naming from launcher:
 - `0xDAFFECEC` - Pokemon LeafGreen Version (USA, Europe) Rev 1
 - `0x1F1C08FB` - Pokemon Emerald Version (USA, Europe) Rev 0
 
-## Verify syntax quickly
-```bash
-python --version
-python shiny_patcher.py --help
-```
+## End
+KiraPatch is built around one goal: higher shiny odds in Gen 3 without fake shinies, checksum corruption, or PKHeX legality problems.
+
+Start with `auto` mode on a clean ROM, pick a sane odds value like `1/128` or `1/256`, and patch a fresh copy.
 
 ## License
 Distributed under the MIT License. See `LICENSE` for more information.
