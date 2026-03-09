@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import io
 import sys
 import threading
+from ctypes import wintypes
 from pathlib import Path
 from queue import Empty, Queue
 
@@ -28,6 +30,24 @@ ODDS_PRESETS = (
     "Custom",
 )
 
+COLORS = {
+    "bg": "#07111d",
+    "card": "#0d1d33",
+    "card_alt": "#122844",
+    "field": "#10233a",
+    "border": "#1c3a5d",
+    "accent": "#69b7ff",
+    "accent_active": "#8bc8ff",
+    "text": "#eef5ff",
+    "muted": "#9db4d1",
+    "shadow": "#050c16",
+}
+
+WM_DROPFILES = 0x0233
+GWL_WNDPROC = -4
+LONG_PTR = ctypes.c_ssize_t
+WNDPROC = ctypes.WINFUNCTYPE(LONG_PTR, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+
 
 def resource_path(name: str) -> Path:
     base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
@@ -38,146 +58,452 @@ class KiraPatchApp:
     def __init__(self, root: tk.Tk, startup_paths: list[Path]) -> None:
         self.root = root
         self.root.title("KiraPatch")
-        self.root.minsize(760, 520)
+        self.root.geometry("520x760")
+        self.root.minsize(500, 720)
+        self.root.configure(bg=COLORS["bg"])
         self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(1, weight=1)
-        self._set_icon()
+        self.root.rowconfigure(0, weight=1)
 
         self.paths: list[Path] = []
         self.worker: threading.Thread | None = None
         self.log_queue: Queue[tuple[str, object]] = Queue()
-
         self.odds_choice = tk.StringVar(value="256")
         self.custom_odds = tk.StringVar(value="256")
-        self.status_text = tk.StringVar(value="Uses auto mode for canonical shiny generation.")
+        self.status_text = tk.StringVar(value="Drag .gba files into the window or click Add ROMs.")
+        self.file_count_text = tk.StringVar(value="No ROMs selected")
 
-        self._build_header()
-        self._build_body()
-        self._build_footer()
+        self._icon_image: tk.PhotoImage | None = None
+        self._logo_image: tk.PhotoImage | None = None
+        self._window_proc_ref: WNDPROC | None = None
+        self._old_wndproc: int | None = None
+        self._hwnd: int | None = None
+
+        self._configure_theme()
+        self._set_icon()
+        self._build_ui()
+        self._enable_file_drops()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         if startup_paths:
             self.add_paths(startup_paths)
 
         self._sync_custom_odds_state()
+        self._append_log("KiraPatch ready. Auto mode uses canonical shiny generation.\n")
         self.root.after(100, self._poll_log_queue)
 
+    def _configure_theme(self) -> None:
+        style = ttk.Style(self.root)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        style.configure(
+            "App.TCombobox",
+            padding=7,
+            foreground=COLORS["text"],
+            fieldbackground=COLORS["field"],
+            background=COLORS["field"],
+            bordercolor=COLORS["border"],
+            lightcolor=COLORS["border"],
+            darkcolor=COLORS["border"],
+            arrowcolor=COLORS["text"],
+        )
+        style.map(
+            "App.TCombobox",
+            foreground=[("readonly", COLORS["text"]), ("disabled", COLORS["muted"])],
+            fieldbackground=[("readonly", COLORS["field"]), ("disabled", COLORS["card_alt"])],
+            background=[("readonly", COLORS["field"]), ("active", COLORS["card_alt"]), ("disabled", COLORS["card_alt"])],
+            selectforeground=[("readonly", COLORS["text"])],
+            selectbackground=[("readonly", COLORS["field"])],
+        )
+        self.root.option_add("*TCombobox*Listbox.background", COLORS["field"])
+        self.root.option_add("*TCombobox*Listbox.foreground", COLORS["text"])
+        self.root.option_add("*TCombobox*Listbox.selectBackground", COLORS["accent"])
+        self.root.option_add("*TCombobox*Listbox.selectForeground", COLORS["bg"])
+
     def _set_icon(self) -> None:
-        icon_path = resource_path("logo.ico")
-        if icon_path.exists():
+        png_path = resource_path("logo.png")
+        if png_path.exists():
             try:
-                self.root.iconbitmap(default=str(icon_path))
+                self._icon_image = tk.PhotoImage(file=str(png_path))
+                self.root.iconphoto(True, self._icon_image)
+                self._logo_image = self._icon_image.subsample(3, 3)
+                return
+            except tk.TclError:
+                self._icon_image = None
+
+        ico_path = resource_path("logo.ico")
+        if ico_path.exists():
+            try:
+                self.root.iconbitmap(default=str(ico_path))
             except tk.TclError:
                 pass
 
-    def _build_header(self) -> None:
-        frame = ttk.Frame(self.root, padding=(14, 14, 14, 10))
-        frame.grid(row=0, column=0, sticky="ew")
-        frame.columnconfigure(0, weight=1)
+    def _build_ui(self) -> None:
+        container = tk.Frame(self.root, bg=COLORS["bg"], padx=18, pady=18)
+        container.grid(row=0, column=0, sticky="nsew")
+        container.columnconfigure(0, weight=1)
+        container.rowconfigure(1, weight=3)
+        container.rowconfigure(3, weight=2)
 
-        title = ttk.Label(frame, text="KiraPatch", font=("Segoe UI", 16, "bold"))
-        title.grid(row=0, column=0, sticky="w")
+        header = self._make_card(container)
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(1, weight=1)
 
-        subtitle = ttk.Label(
-            frame,
-            text="Standalone Gen 3 shiny patcher. Select ROMs, choose odds, patch.",
+        if self._logo_image is not None:
+            tk.Label(header, image=self._logo_image, bg=COLORS["card"]).grid(
+                row=0, column=0, rowspan=2, sticky="nw", padx=(0, 12)
+            )
+
+        tk.Label(
+            header,
+            text="KiraPatch",
+            bg=COLORS["card"],
+            fg=COLORS["text"],
+            font=("Segoe UI Semibold", 18),
+        ).grid(row=0, column=1, sticky="w")
+        tk.Label(
+            header,
+            text="Standalone Gen 3 shiny patcher. Minimal, legal-focused, and built for clean ROMs.",
+            bg=COLORS["card"],
+            fg=COLORS["muted"],
+            justify="left",
+            wraplength=340,
+            font=("Segoe UI", 10),
+        ).grid(row=1, column=1, sticky="w", pady=(4, 0))
+
+        files_card = self._make_card(container)
+        files_card.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
+        files_card.columnconfigure(0, weight=1)
+        files_card.rowconfigure(2, weight=1)
+
+        tk.Label(
+            files_card,
+            text="ROM Files",
+            bg=COLORS["card"],
+            fg=COLORS["text"],
+            font=("Segoe UI Semibold", 12),
+        ).grid(row=0, column=0, sticky="w")
+        tk.Label(
+            files_card,
+            text="Drag and drop .gba files onto this window, or use Add ROMs.",
+            bg=COLORS["card"],
+            fg=COLORS["muted"],
+            font=("Segoe UI", 10),
+        ).grid(row=1, column=0, sticky="w", pady=(4, 10))
+
+        list_shell = tk.Frame(
+            files_card,
+            bg=COLORS["field"],
+            highlightbackground=COLORS["border"],
+            highlightthickness=1,
+            bd=0,
         )
-        subtitle.grid(row=1, column=0, sticky="w", pady=(4, 0))
+        list_shell.grid(row=2, column=0, sticky="nsew")
+        list_shell.columnconfigure(0, weight=1)
+        list_shell.rowconfigure(0, weight=1)
 
-    def _build_body(self) -> None:
-        body = ttk.Frame(self.root, padding=(14, 0, 14, 10))
-        body.grid(row=1, column=0, sticky="nsew")
-        body.columnconfigure(0, weight=3)
-        body.columnconfigure(1, weight=2)
-        body.rowconfigure(1, weight=1)
-
-        files_label = ttk.Label(body, text="ROM files")
-        files_label.grid(row=0, column=0, sticky="w")
-
-        options_label = ttk.Label(body, text="Patch settings")
-        options_label.grid(row=0, column=1, sticky="w", padx=(14, 0))
-
-        files_frame = ttk.Frame(body)
-        files_frame.grid(row=1, column=0, sticky="nsew")
-        files_frame.columnconfigure(0, weight=1)
-        files_frame.rowconfigure(0, weight=1)
-
-        self.file_list = tk.Listbox(files_frame, selectmode=tk.EXTENDED, height=12)
+        self.file_list = tk.Listbox(
+            list_shell,
+            selectmode=tk.EXTENDED,
+            height=10,
+            activestyle="none",
+            bg=COLORS["field"],
+            fg=COLORS["text"],
+            selectbackground=COLORS["accent"],
+            selectforeground=COLORS["bg"],
+            highlightthickness=0,
+            relief="flat",
+            font=("Segoe UI", 10),
+        )
         self.file_list.grid(row=0, column=0, sticky="nsew")
 
-        file_scroll = ttk.Scrollbar(files_frame, orient="vertical", command=self.file_list.yview)
+        file_scroll = tk.Scrollbar(
+            list_shell,
+            orient="vertical",
+            command=self.file_list.yview,
+            bg=COLORS["card_alt"],
+            troughcolor=COLORS["bg"],
+            activebackground=COLORS["accent"],
+            highlightthickness=0,
+            bd=0,
+            relief="flat",
+        )
         file_scroll.grid(row=0, column=1, sticky="ns")
         self.file_list.configure(yscrollcommand=file_scroll.set)
 
-        file_button_row = ttk.Frame(files_frame)
-        file_button_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-        for idx in range(3):
-            file_button_row.columnconfigure(idx, weight=1)
+        footer_row = tk.Frame(files_card, bg=COLORS["card"])
+        footer_row.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        footer_row.columnconfigure(0, weight=1)
+        footer_row.columnconfigure(1, weight=1)
+        footer_row.columnconfigure(2, weight=1)
 
-        ttk.Button(file_button_row, text="Add ROMs", command=self.choose_files).grid(
-            row=0, column=0, sticky="ew"
+        self._make_button(footer_row, "Add ROMs", self.choose_files).grid(row=0, column=0, sticky="ew")
+        self._make_button(footer_row, "Remove", self.remove_selected).grid(
+            row=0, column=1, sticky="ew", padx=8
         )
-        ttk.Button(
-            file_button_row, text="Remove Selected", command=self.remove_selected
-        ).grid(row=0, column=1, sticky="ew", padx=8)
-        ttk.Button(file_button_row, text="Clear List", command=self.clear_files).grid(
-            row=0, column=2, sticky="ew"
-        )
+        self._make_button(footer_row, "Clear", self.clear_files).grid(row=0, column=2, sticky="ew")
 
-        options = ttk.Frame(body, padding=(14, 0, 0, 0))
-        options.grid(row=1, column=1, sticky="nsew")
-        options.columnconfigure(1, weight=1)
+        tk.Label(
+            files_card,
+            textvariable=self.file_count_text,
+            bg=COLORS["card"],
+            fg=COLORS["muted"],
+            font=("Segoe UI", 9),
+        ).grid(row=4, column=0, sticky="w", pady=(10, 0))
 
-        ttk.Label(options, text="Odds (1 in N)").grid(row=0, column=0, sticky="w")
+        settings_card = self._make_card(container)
+        settings_card.grid(row=2, column=0, sticky="ew", pady=(14, 0))
+        settings_card.columnconfigure(1, weight=1)
+
+        tk.Label(
+            settings_card,
+            text="Patch Settings",
+            bg=COLORS["card"],
+            fg=COLORS["text"],
+            font=("Segoe UI Semibold", 12),
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
+        tk.Label(
+            settings_card,
+            text="Mode is fixed to auto so the EXE stays on canonical shiny generation.",
+            bg=COLORS["card"],
+            fg=COLORS["muted"],
+            font=("Segoe UI", 10),
+            wraplength=420,
+            justify="left",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 12))
+
+        tk.Label(
+            settings_card,
+            text="Odds (1 in N)",
+            bg=COLORS["card"],
+            fg=COLORS["text"],
+            font=("Segoe UI", 10),
+        ).grid(row=2, column=0, sticky="w")
         self.odds_combo = ttk.Combobox(
-            options,
+            settings_card,
             textvariable=self.odds_choice,
             values=ODDS_PRESETS,
             state="readonly",
+            style="App.TCombobox",
         )
-        self.odds_combo.grid(row=0, column=1, sticky="ew")
+        self.odds_combo.grid(row=2, column=1, sticky="ew")
         self.odds_combo.bind("<<ComboboxSelected>>", self._on_odds_selected)
 
-        ttk.Label(options, text="Custom N").grid(row=1, column=0, sticky="w", pady=(10, 0))
-        self.custom_entry = ttk.Entry(options, textvariable=self.custom_odds)
-        self.custom_entry.grid(row=1, column=1, sticky="ew", pady=(10, 0))
-
-        ttk.Label(options, text="Mode").grid(row=2, column=0, sticky="w", pady=(10, 0))
-        ttk.Label(options, text="auto (canonical, recommended)").grid(
-            row=2, column=1, sticky="w", pady=(10, 0)
+        tk.Label(
+            settings_card,
+            text="Custom N",
+            bg=COLORS["card"],
+            fg=COLORS["text"],
+            font=("Segoe UI", 10),
+        ).grid(row=3, column=0, sticky="w", pady=(10, 0))
+        self.custom_entry = tk.Entry(
+            settings_card,
+            textvariable=self.custom_odds,
+            bg=COLORS["field"],
+            fg=COLORS["text"],
+            insertbackground=COLORS["text"],
+            relief="flat",
+            highlightbackground=COLORS["border"],
+            highlightcolor=COLORS["accent"],
+            highlightthickness=1,
+            bd=0,
+            font=("Segoe UI", 10),
         )
+        self.custom_entry.grid(row=3, column=1, sticky="ew", pady=(10, 0))
 
-        note = (
-            "Higher rates work, but 1/16 can pause for a bit while the game rerolls.\n"
-            "1/128 or 1/256 are smoother for normal play."
+        tk.Label(
+            settings_card,
+            text="1/16 works, but it can pause for a while. 1/128 or 1/256 feel much smoother.",
+            bg=COLORS["card"],
+            fg=COLORS["muted"],
+            font=("Segoe UI", 9),
+            wraplength=420,
+            justify="left",
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(12, 14))
+
+        self.patch_button = self._make_button(settings_card, "Patch", self.start_patch, accent=True)
+        self.patch_button.grid(row=5, column=0, columnspan=2, sticky="ew")
+
+        log_card = self._make_card(container)
+        log_card.grid(row=3, column=0, sticky="nsew", pady=(14, 0))
+        log_card.columnconfigure(0, weight=1)
+        log_card.rowconfigure(1, weight=1)
+
+        tk.Label(
+            log_card,
+            text="Patch Log",
+            bg=COLORS["card"],
+            fg=COLORS["text"],
+            font=("Segoe UI Semibold", 12),
+        ).grid(row=0, column=0, sticky="w")
+
+        log_shell = tk.Frame(
+            log_card,
+            bg=COLORS["field"],
+            highlightbackground=COLORS["border"],
+            highlightthickness=1,
+            bd=0,
         )
-        ttk.Label(options, text=note, justify="left", wraplength=260).grid(
-            row=3, column=0, columnspan=2, sticky="w", pady=(14, 0)
+        log_shell.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+        log_shell.columnconfigure(0, weight=1)
+        log_shell.rowconfigure(0, weight=1)
+
+        self.log_text = tk.Text(
+            log_shell,
+            height=10,
+            wrap="word",
+            state="disabled",
+            bg=COLORS["field"],
+            fg=COLORS["text"],
+            insertbackground=COLORS["text"],
+            relief="flat",
+            highlightthickness=0,
+            bd=0,
+            font=("Consolas", 9),
         )
-
-        self.patch_button = ttk.Button(options, text="Patch Selected ROMs", command=self.start_patch)
-        self.patch_button.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(18, 0))
-
-        log_label = ttk.Label(body, text="Patch log")
-        log_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(12, 4))
-
-        log_frame = ttk.Frame(body)
-        log_frame.grid(row=3, column=0, columnspan=2, sticky="nsew")
-        log_frame.columnconfigure(0, weight=1)
-        log_frame.rowconfigure(0, weight=1)
-        body.rowconfigure(3, weight=1)
-
-        self.log_text = tk.Text(log_frame, height=14, wrap="word", state="disabled")
         self.log_text.grid(row=0, column=0, sticky="nsew")
 
-        log_scroll = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
+        log_scroll = tk.Scrollbar(
+            log_shell,
+            orient="vertical",
+            command=self.log_text.yview,
+            bg=COLORS["card_alt"],
+            troughcolor=COLORS["bg"],
+            activebackground=COLORS["accent"],
+            highlightthickness=0,
+            bd=0,
+            relief="flat",
+        )
         log_scroll.grid(row=0, column=1, sticky="ns")
         self.log_text.configure(yscrollcommand=log_scroll.set)
 
-    def _build_footer(self) -> None:
-        footer = ttk.Frame(self.root, padding=(14, 0, 14, 14))
-        footer.grid(row=2, column=0, sticky="ew")
-        footer.columnconfigure(0, weight=1)
-        ttk.Label(footer, textvariable=self.status_text).grid(row=0, column=0, sticky="w")
+        status = tk.Label(
+            container,
+            textvariable=self.status_text,
+            bg=COLORS["bg"],
+            fg=COLORS["muted"],
+            anchor="w",
+            justify="left",
+            font=("Segoe UI", 9),
+        )
+        status.grid(row=4, column=0, sticky="ew", pady=(12, 0))
+
+    def _make_card(self, parent: tk.Misc) -> tk.Frame:
+        return tk.Frame(
+            parent,
+            bg=COLORS["card"],
+            padx=14,
+            pady=14,
+            highlightbackground=COLORS["border"],
+            highlightthickness=1,
+            bd=0,
+        )
+
+    def _make_button(
+        self,
+        parent: tk.Misc,
+        text: str,
+        command: object,
+        accent: bool = False,
+    ) -> tk.Button:
+        bg = COLORS["accent"] if accent else COLORS["card_alt"]
+        fg = COLORS["bg"] if accent else COLORS["text"]
+        active_bg = COLORS["accent_active"] if accent else COLORS["field"]
+        return tk.Button(
+            parent,
+            text=text,
+            command=command,
+            bg=bg,
+            fg=fg,
+            activebackground=active_bg,
+            activeforeground=fg,
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            padx=12,
+            pady=10,
+            cursor="hand2",
+            font=("Segoe UI Semibold", 10),
+        )
+
+    def _enable_file_drops(self) -> None:
+        if sys.platform != "win32":
+            return
+
+        self.root.update_idletasks()
+        self._hwnd = self.root.winfo_id()
+        shell32 = ctypes.windll.shell32
+        user32 = ctypes.windll.user32
+
+        shell32.DragAcceptFiles.argtypes = [wintypes.HWND, wintypes.BOOL]
+        shell32.DragAcceptFiles(self._hwnd, True)
+
+        user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, LONG_PTR]
+        user32.SetWindowLongPtrW.restype = LONG_PTR
+        user32.CallWindowProcW.argtypes = [LONG_PTR, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        user32.CallWindowProcW.restype = LONG_PTR
+        self._call_window_proc = user32.CallWindowProcW
+
+        self._window_proc_ref = WNDPROC(self._window_proc)
+        self._old_wndproc = user32.SetWindowLongPtrW(
+            self._hwnd,
+            GWL_WNDPROC,
+            ctypes.cast(self._window_proc_ref, ctypes.c_void_p).value,
+        )
+
+    def _restore_window_proc(self) -> None:
+        if sys.platform != "win32" or self._hwnd is None or self._old_wndproc is None:
+            return
+        user32 = ctypes.windll.user32
+        user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, LONG_PTR]
+        user32.SetWindowLongPtrW.restype = LONG_PTR
+        user32.SetWindowLongPtrW(self._hwnd, GWL_WNDPROC, self._old_wndproc)
+        self._old_wndproc = None
+
+    def _window_proc(
+        self,
+        hwnd: int,
+        msg: int,
+        wparam: int,
+        lparam: int,
+    ) -> int:
+        if msg == WM_DROPFILES:
+            paths = self._extract_drop_paths(wparam)
+            self.root.after(0, lambda drop_paths=paths: self._handle_drop(drop_paths))
+            return 0
+        return int(self._call_window_proc(self._old_wndproc, hwnd, msg, wparam, lparam))
+
+    def _extract_drop_paths(self, hdrop: int) -> list[Path]:
+        shell32 = ctypes.windll.shell32
+        shell32.DragQueryFileW.argtypes = [wintypes.HANDLE, wintypes.UINT, wintypes.LPWSTR, wintypes.UINT]
+        shell32.DragQueryFileW.restype = wintypes.UINT
+        shell32.DragFinish.argtypes = [wintypes.HANDLE]
+
+        count = shell32.DragQueryFileW(hdrop, 0xFFFFFFFF, None, 0)
+        paths: list[Path] = []
+        for idx in range(count):
+            length = shell32.DragQueryFileW(hdrop, idx, None, 0)
+            buffer = ctypes.create_unicode_buffer(length + 1)
+            shell32.DragQueryFileW(hdrop, idx, buffer, length + 1)
+            paths.append(Path(buffer.value))
+        shell32.DragFinish(hdrop)
+        return paths
+
+    def _handle_drop(self, dropped_paths: list[Path]) -> None:
+        if not dropped_paths:
+            return
+        before = len(self.paths)
+        self.add_paths(dropped_paths)
+        added = len(self.paths) - before
+        if added > 0:
+            self.status_text.set(f"Added {added} file(s) by drag and drop.")
+            self._append_log(f"Added {added} file(s) by drag and drop.\n")
+
+    def _on_close(self) -> None:
+        self._restore_window_proc()
+        self.root.destroy()
 
     def _on_odds_selected(self, _event: object) -> None:
         self._sync_custom_odds_state()
@@ -193,6 +519,15 @@ class KiraPatchApp:
         if not is_custom:
             self.custom_odds.set(self.odds_choice.get())
 
+    def _update_file_count(self) -> None:
+        count = len(self.paths)
+        if count == 0:
+            self.file_count_text.set("No ROMs selected")
+        elif count == 1:
+            self.file_count_text.set("1 ROM queued")
+        else:
+            self.file_count_text.set(f"{count} ROMs queued")
+
     def choose_files(self) -> None:
         selected = filedialog.askopenfilenames(
             title="Select Gen 3 ROMs",
@@ -200,6 +535,7 @@ class KiraPatchApp:
         )
         if selected:
             self.add_paths([Path(p) for p in selected])
+            self.status_text.set("ROMs added.")
 
     def add_paths(self, new_paths: list[Path]) -> None:
         known = set()
@@ -221,6 +557,7 @@ class KiraPatchApp:
             self.paths.append(path)
             self.file_list.insert("end", str(path))
             known.add(resolved)
+        self._update_file_count()
 
     def remove_selected(self) -> None:
         indices = list(self.file_list.curselection())
@@ -229,10 +566,14 @@ class KiraPatchApp:
         for idx in reversed(indices):
             self.file_list.delete(idx)
             del self.paths[idx]
+        self._update_file_count()
+        self.status_text.set("Selected ROMs removed.")
 
     def clear_files(self) -> None:
         self.file_list.delete(0, "end")
         self.paths.clear()
+        self._update_file_count()
+        self.status_text.set("ROM list cleared.")
 
     def _append_log(self, text: str) -> None:
         self.log_text.configure(state="normal")
@@ -241,10 +582,7 @@ class KiraPatchApp:
         self.log_text.configure(state="disabled")
 
     def _selected_odds(self) -> int | None:
-        if self.odds_choice.get() == "Custom":
-            raw = self.custom_odds.get().strip()
-        else:
-            raw = self.odds_choice.get()
+        raw = self.custom_odds.get().strip() if self.odds_choice.get() == "Custom" else self.odds_choice.get()
         if not raw.isdigit():
             return None
         value = int(raw)
@@ -254,14 +592,10 @@ class KiraPatchApp:
 
     def _set_busy(self, busy: bool) -> None:
         entry_state = "normal" if self.odds_choice.get() == "Custom" else "disabled"
-        if busy:
-            self.patch_button.configure(state="disabled")
-            self.odds_combo.configure(state="disabled")
-            self.custom_entry.configure(state="disabled")
-        else:
-            self.patch_button.configure(state="normal")
-            self.odds_combo.configure(state="readonly")
-            self.custom_entry.configure(state=entry_state)
+        add_state = tk.DISABLED if busy else tk.NORMAL
+        self.patch_button.configure(state=add_state)
+        self.odds_combo.configure(state="disabled" if busy else "readonly")
+        self.custom_entry.configure(state="disabled" if busy else entry_state)
 
     def start_patch(self) -> None:
         if self.worker is not None and self.worker.is_alive():
