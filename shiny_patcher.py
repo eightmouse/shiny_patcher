@@ -1078,7 +1078,11 @@ def patch_data_canonical(data: bytearray, spec: RomSpec, plan: OddsPlan) -> list
         data,
         create_mon_start,
     )
-    outer_wrapper_sites = [site for site in wrapper_sites if site[0].name != "fixed-personality wrapper C"]
+    use_outer_wrapper_c = spec.game_code in {"BPRE", "BPGE"}
+    outer_wrapper_sites = [
+        site for site in wrapper_sites
+        if site[0].name != "fixed-personality wrapper C" or use_outer_wrapper_c
+    ]
     skip_caller_returns = tuple(
         ((ROM_EXEC_BASE + hook_callsite) | 1) & 0xFFFFFFFF
         for layout, hook_callsite, _ in outer_wrapper_sites
