@@ -49,8 +49,6 @@ WINDOW_SIZE = "920x620"
 FILES_HEIGHT = 196
 LIVE_LOG_HEIGHT = 188
 CORNER_RADIUS = 18
-WM_DROPFILES = 0x0233
-GWL_WNDPROC = -4
 GWL_STYLE = -16
 DWMWA_USE_IMMERSIVE_DARK_MODE_OLD = 19
 DWMWA_USE_IMMERSIVE_DARK_MODE = 20
@@ -67,8 +65,6 @@ SWP_NOMOVE = 0x0002
 SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 SWP_FRAMECHANGED = 0x0020
-LONG_PTR = ctypes.c_ssize_t
-WNDPROC = ctypes.WINFUNCTYPE(LONG_PTR, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
 
 
 def resource_path(name: str) -> Path:
@@ -249,15 +245,12 @@ class KiraPatchApp:
         self.log_queue: Queue[tuple[str, object]] = Queue()
         self.odds_choice = tk.StringVar(value="256")
         self.custom_odds = tk.StringVar(value="256")
-        self.status_text = tk.StringVar(value="Drag .gba or .rom files into the window or click Add ROMs.")
+        self.status_text = tk.StringVar(value="Use Add ROMs to select .gba or .rom files.")
         self.file_count_text = tk.StringVar(value="No ROMs selected")
 
         self._icon_image: tk.PhotoImage | None = None
         self._logo_image: tk.PhotoImage | None = None
-        self._window_proc_ref: WNDPROC | None = None
-        self._old_wndproc: int | None = None
         self._hwnd: int | None = None
-        self._call_window_proc = None
         self._drag_offset = (0, 0)
 
         self.file_buttons: list[tk.Button] = []
@@ -341,7 +334,6 @@ class KiraPatchApp:
                 return
         self._apply_window_frame()
         self._apply_rounded_region()
-        self._enable_file_drops()
 
     def _apply_window_frame(self) -> None:
         if sys.platform != "win32":
@@ -457,7 +449,7 @@ class KiraPatchApp:
         ).grid(row=0, column=0, sticky="w")
         tk.Label(
             files_card,
-            text="Drag and drop .gba or .rom files into the window, or use Add ROMs.",
+            text="Use Add ROMs to select .gba or .rom files.",
             bg=COLORS["card"],
             fg=COLORS["muted"],
             font=("Segoe UI", 10),
@@ -736,97 +728,7 @@ class KiraPatchApp:
         if sys.platform == "win32" and self.root.state() == "normal":
             self.root.after(10, self._enable_custom_frame)
 
-    def _enable_file_drops(self) -> None:
-        if sys.platform != "win32":
-            return
-
-        self.root.update_idletasks()
-        self._hwnd = self.root.winfo_id()
-        shell32 = ctypes.windll.shell32
-        user32 = ctypes.windll.user32
-
-        shell32.DragAcceptFiles.argtypes = [wintypes.HWND, wintypes.BOOL]
-        shell32.DragAcceptFiles(self._hwnd, True)
-
-        user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, LONG_PTR]
-        user32.SetWindowLongPtrW.restype = LONG_PTR
-        user32.CallWindowProcW.argtypes = [LONG_PTR, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-        user32.CallWindowProcW.restype = LONG_PTR
-        self._call_window_proc = user32.CallWindowProcW
-
-        if self._old_wndproc is not None:
-            user32.SetWindowLongPtrW(self._hwnd, GWL_WNDPROC, self._old_wndproc)
-            self._old_wndproc = None
-
-        self._window_proc_ref = WNDPROC(self._window_proc)
-        self._old_wndproc = user32.SetWindowLongPtrW(
-            self._hwnd,
-            GWL_WNDPROC,
-            ctypes.cast(self._window_proc_ref, ctypes.c_void_p).value,
-        )
-
-    def _restore_window_proc(self) -> None:
-        if sys.platform != "win32" or self._hwnd is None or self._old_wndproc is None:
-            return
-        user32 = ctypes.windll.user32
-        user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, LONG_PTR]
-        user32.SetWindowLongPtrW.restype = LONG_PTR
-        user32.SetWindowLongPtrW(self._hwnd, GWL_WNDPROC, self._old_wndproc)
-        self._old_wndproc = None
-
-    def _window_proc(self, hwnd: int, msg: int, wparam: int, lparam: int) -> int:
-        try:
-            if msg == WM_DROPFILES:
-                paths = self._extract_drop_paths(wparam)
-                self.root.after(0, lambda drop_paths=paths: self._handle_drop(drop_paths))
-                return 0
-        except Exception as exc:
-            self.root.after(0, lambda err=str(exc): self._report_drop_error(err))
-            return 0
-
-        if self._call_window_proc is not None and self._old_wndproc is not None:
-            return int(self._call_window_proc(self._old_wndproc, hwnd, msg, wparam, lparam))
-        return 0
-
-    def _extract_drop_paths(self, hdrop: int) -> list[Path]:
-        shell32 = ctypes.windll.shell32
-        shell32.DragQueryFileW.argtypes = [wintypes.HANDLE, wintypes.UINT, wintypes.LPWSTR, wintypes.UINT]
-        shell32.DragQueryFileW.restype = wintypes.UINT
-        shell32.DragFinish.argtypes = [wintypes.HANDLE]
-
-        paths: list[Path] = []
-        try:
-            count = shell32.DragQueryFileW(hdrop, 0xFFFFFFFF, None, 0)
-            for idx in range(count):
-                length = shell32.DragQueryFileW(hdrop, idx, None, 0)
-                buffer = ctypes.create_unicode_buffer(length + 1)
-                shell32.DragQueryFileW(hdrop, idx, buffer, length + 1)
-                if buffer.value:
-                    paths.append(Path(buffer.value))
-        finally:
-            shell32.DragFinish(hdrop)
-        return paths
-
-    def _report_drop_error(self, message: str) -> None:
-        self.status_text.set("Drag and drop failed. Try Add ROMs instead.")
-        self._append_log(f"[WARN] Drag and drop failed: {message}\n")
-
-    def _handle_drop(self, dropped_paths: list[Path]) -> None:
-        try:
-            if not dropped_paths:
-                return
-            added, ignored = self.add_paths(dropped_paths)
-            if added > 0:
-                self.status_text.set(f"Added {added} file(s) by drag and drop.")
-                self._append_log(f"Added {added} file(s) by drag and drop.\n")
-            elif ignored > 0:
-                self.status_text.set("No .gba or .rom files were added from that drop.")
-                self._append_log("Ignored dropped items that were not new .gba files.\n")
-        except Exception as exc:
-            self._report_drop_error(str(exc))
-
     def _on_close(self) -> None:
-        self._restore_window_proc()
         self.root.destroy()
 
     def _on_odds_selected(self, _event: object) -> None:
