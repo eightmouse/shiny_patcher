@@ -273,7 +273,6 @@ class KiraPatchApp:
         self.root.update_idletasks()
         self._enable_custom_frame()
         self.root.after(160, self._enable_custom_frame)
-        self._enable_file_drops()
         self.root.bind("<Map>", self._on_window_map, add="+")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -342,6 +341,7 @@ class KiraPatchApp:
                 return
         self._apply_window_frame()
         self._apply_rounded_region()
+        self._enable_file_drops()
 
     def _apply_window_frame(self) -> None:
         if sys.platform != "win32":
@@ -429,7 +429,7 @@ class KiraPatchApp:
 
         tk.Label(
             header,
-            text="Gen3 shiny patcher with canonical legal rerolls.\nPatch clean ROMs, keep legal shinies, and keep the flow simple.",
+            text="Gen3 Shiny Patcher for canonically leagal shinies\nGitHub@eightmouse",
             bg=COLORS["card"],
             fg=COLORS["muted"],
             justify="left",
@@ -632,7 +632,7 @@ class KiraPatchApp:
         status.grid(row=2, column=0, sticky="ew", pady=(10, 0))
 
     def _build_titlebar(self, parent: tk.Misc) -> tk.Frame:
-        titlebar = tk.Frame(parent, bg=COLORS["titlebar"], height=36)
+        titlebar = tk.Frame(parent, bg=COLORS["titlebar"], height=38)
         titlebar.grid_propagate(False)
         titlebar.columnconfigure(0, weight=1)
         titlebar.rowconfigure(0, weight=1)
@@ -642,12 +642,12 @@ class KiraPatchApp:
             text="KiraPatch",
             bg=COLORS["titlebar"],
             fg=COLORS["text"],
-            font=("Segoe UI Semibold", 9),
+            font=("Segoe UI Semibold", 10),
         )
         title_label.grid(row=0, column=0, sticky="w", padx=(12, 0), pady=(1, 0))
 
         controls = tk.Frame(titlebar, bg=COLORS["titlebar"])
-        controls.grid(row=0, column=1, sticky="e", padx=(0, 8), pady=5)
+        controls.grid(row=0, column=1, sticky="e", padx=(0, 8), pady=6)
 
         minimize_button = self._make_titlebar_button(controls, "-", self._minimize_window, COLORS["title_button_hover"])
         minimize_button.grid(row=0, column=0, padx=(0, 4))
@@ -665,7 +665,7 @@ class KiraPatchApp:
             parent,
             text=text,
             command=command,
-            width=3,
+            width=4,
             bg=COLORS["titlebar"],
             fg=COLORS["text"],
             activebackground=hover_bg,
@@ -674,7 +674,7 @@ class KiraPatchApp:
             bd=0,
             highlightthickness=0,
             padx=0,
-            pady=1,
+            pady=2,
             cursor="hand2",
             takefocus=0,
             font=("Segoe UI Semibold", 9),
@@ -753,6 +753,10 @@ class KiraPatchApp:
         user32.CallWindowProcW.argtypes = [LONG_PTR, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
         user32.CallWindowProcW.restype = LONG_PTR
         self._call_window_proc = user32.CallWindowProcW
+
+        if self._old_wndproc is not None:
+            user32.SetWindowLongPtrW(self._hwnd, GWL_WNDPROC, self._old_wndproc)
+            self._old_wndproc = None
 
         self._window_proc_ref = WNDPROC(self._window_proc)
         self._old_wndproc = user32.SetWindowLongPtrW(
