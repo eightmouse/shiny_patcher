@@ -72,7 +72,7 @@ Do not use:
 
 ## How Do I Patch The .rom?
 ### Standalone Windows EXE
-Download the prebuilt `KiraPatch.exe` from the Releases section on the right, or build it locally with `build_standalone.bat` if you want your own copy.
+Download `KiraPatch.exe` from the Releases section on the right.
 
 The EXE is now the main user-facing launcher. It opens a compact GUI where you can:
 - add one or more `.gba` or `.rom` files with the file picker
