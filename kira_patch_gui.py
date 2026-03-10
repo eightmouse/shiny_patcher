@@ -234,61 +234,6 @@ class RoundedButton(tk.Canvas):
         self._command()
 
 
-class TitlebarIconButton(tk.Canvas):
-    def __init__(self, parent: tk.Misc, kind: str, command: object, *, hover_fill: str) -> None:
-        super().__init__(
-            parent,
-            width=30,
-            height=20,
-            bg=COLORS["titlebar"],
-            highlightthickness=0,
-            bd=0,
-            relief="flat",
-            takefocus=0,
-            cursor="hand2",
-        )
-        self._kind = kind
-        self._command = command
-        self._fill = COLORS["titlebar"]
-        self._hover_fill = hover_fill
-        self.bind("<Configure>", self._redraw, add="+")
-        self.bind("<Enter>", self._on_enter, add="+")
-        self.bind("<Leave>", self._on_leave, add="+")
-        self.bind("<Button-1>", self._on_click, add="+")
-        self._redraw()
-
-    def _redraw(self, _event: tk.Event | None = None) -> None:
-        self.delete("all")
-        width = max(self.winfo_width(), 30)
-        height = max(self.winfo_height(), 20)
-        self._rounded_rect(0, 0, width, height, 7, fill=self._fill)
-        if self._kind == "minimize":
-            self.create_line(width / 2 - 5, height / 2 + 2, width / 2 + 5, height / 2 + 2, fill=COLORS["text"], width=2)
-        else:
-            self.create_line(width / 2 - 4, height / 2 - 4, width / 2 + 4, height / 2 + 4, fill=COLORS["text"], width=2)
-            self.create_line(width / 2 + 4, height / 2 - 4, width / 2 - 4, height / 2 + 4, fill=COLORS["text"], width=2)
-
-    def _rounded_rect(self, x1: float, y1: float, x2: float, y2: float, radius: float, *, fill: str) -> None:
-        radius = max(1.0, min(radius, (x2 - x1) / 2.0, (y2 - y1) / 2.0))
-        self.create_arc(x1, y1, x1 + radius * 2, y1 + radius * 2, start=90, extent=90, fill=fill, outline=fill)
-        self.create_arc(x2 - radius * 2, y1, x2, y1 + radius * 2, start=0, extent=90, fill=fill, outline=fill)
-        self.create_arc(x1, y2 - radius * 2, x1 + radius * 2, y2, start=180, extent=90, fill=fill, outline=fill)
-        self.create_arc(x2 - radius * 2, y2 - radius * 2, x2, y2, start=270, extent=90, fill=fill, outline=fill)
-        self.create_rectangle(x1 + radius, y1, x2 - radius, y2, fill=fill, outline=fill)
-        self.create_rectangle(x1, y1 + radius, x2, y2 - radius, fill=fill, outline=fill)
-
-    def _on_enter(self, _event: tk.Event) -> None:
-        self._fill = self._hover_fill
-        self._redraw()
-
-    def _on_leave(self, _event: tk.Event) -> None:
-        self._fill = COLORS["titlebar"]
-        self._redraw()
-
-    def _on_click(self, _event: tk.Event) -> None:
-        self._command()
-
-
 class KiraPatchApp:
     def __init__(self, root: tk.Tk, startup_paths: list[Path]) -> None:
         self.root = root
@@ -316,7 +261,7 @@ class KiraPatchApp:
         self._drag_offset = (0, 0)
 
         self.file_buttons: list[tk.Button] = []
-        self.patch_button: RoundedButton | None = None
+        self.patch_button: tk.Button | None = None
         self.log_text: tk.Text | None = None
         self.odds_combo: ttk.Combobox | None = None
         self.custom_entry: tk.Entry | None = None
@@ -480,15 +425,8 @@ class KiraPatchApp:
                 header,
                 image=self._logo_image,
                 bg=COLORS["card"],
-            ).grid(row=0, column=0, rowspan=2, sticky="nw", padx=(0, 12), pady=(2, 0))
+            ).grid(row=0, column=0, sticky="nw", padx=(0, 12), pady=(2, 0))
 
-        tk.Label(
-            header,
-            text="KiraPatch",
-            bg=COLORS["card"],
-            fg=COLORS["text"],
-            font=("Segoe UI Semibold", 16),
-        ).grid(row=0, column=1, sticky="w")
         tk.Label(
             header,
             text="Gen3 shiny patcher with canonical legal rerolls.\nPatch clean ROMs, keep legal shinies, and keep the flow simple.",
@@ -497,7 +435,7 @@ class KiraPatchApp:
             justify="left",
             wraplength=760,
             font=("Segoe UI", 10),
-        ).grid(row=1, column=1, sticky="w", pady=(4, 0))
+        ).grid(row=0, column=1, sticky="w", pady=(2, 0))
 
         panels = tk.Frame(container, bg=COLORS["bg"])
         panels.grid(row=1, column=0, sticky="nsew")
@@ -584,7 +522,7 @@ class KiraPatchApp:
         settings_card = self._make_card(panels)
         settings_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
         settings_card.columnconfigure(1, weight=1)
-        settings_card.rowconfigure(6, weight=1)
+        settings_card.rowconfigure(5, weight=1)
 
         tk.Label(
             settings_card,
@@ -595,21 +533,11 @@ class KiraPatchApp:
         ).grid(row=0, column=0, columnspan=2, sticky="w")
         tk.Label(
             settings_card,
-            text="Mode stays on auto so the EXE always uses the canonical legal shiny path.",
-            bg=COLORS["card"],
-            fg=COLORS["muted"],
-            font=("Segoe UI", 10),
-            wraplength=360,
-            justify="left",
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 12))
-
-        tk.Label(
-            settings_card,
             text="Odds (1 in N)",
             bg=COLORS["card"],
             fg=COLORS["text"],
             font=("Segoe UI", 10),
-        ).grid(row=2, column=0, sticky="w")
+        ).grid(row=1, column=0, sticky="w")
         self.odds_combo = ttk.Combobox(
             settings_card,
             textvariable=self.odds_choice,
@@ -617,7 +545,7 @@ class KiraPatchApp:
             state="readonly",
             style="App.TCombobox",
         )
-        self.odds_combo.grid(row=2, column=1, sticky="ew")
+        self.odds_combo.grid(row=1, column=1, sticky="ew")
         self.odds_combo.bind("<<ComboboxSelected>>", self._on_odds_selected)
 
         tk.Label(
@@ -626,7 +554,7 @@ class KiraPatchApp:
             bg=COLORS["card"],
             fg=COLORS["text"],
             font=("Segoe UI", 10),
-        ).grid(row=3, column=0, sticky="w", pady=(10, 0))
+        ).grid(row=2, column=0, sticky="w", pady=(10, 0))
         self.custom_entry = tk.Entry(
             settings_card,
             textvariable=self.custom_odds,
@@ -642,7 +570,7 @@ class KiraPatchApp:
             bd=0,
             font=("Segoe UI", 10),
         )
-        self.custom_entry.grid(row=3, column=1, sticky="ew", pady=(10, 0))
+        self.custom_entry.grid(row=2, column=1, sticky="ew", pady=(10, 0))
 
         tk.Label(
             settings_card,
@@ -652,19 +580,11 @@ class KiraPatchApp:
             font=("Segoe UI", 9),
             wraplength=360,
             justify="left",
-        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(12, 12))
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(12, 10))
 
-        self.patch_button = RoundedButton(
-            settings_card,
-            "Patch",
-            self.start_patch,
-            fill=COLORS["accent"],
-            hover_fill=COLORS["accent_active"],
-            text_fill=COLORS["text"],
-            height=46,
-            radius=18,
-        )
-        self.patch_button.grid(row=5, column=0, columnspan=2, sticky="ew")
+        self.patch_button = self._make_button(settings_card, "Patch", self.start_patch, accent=True)
+        self.patch_button.configure(font=("Segoe UI Semibold", 11), pady=12)
+        self.patch_button.grid(row=4, column=0, columnspan=2, sticky="ew")
 
         live_shell = tk.Frame(
             settings_card,
@@ -674,7 +594,7 @@ class KiraPatchApp:
             bd=0,
             height=LIVE_LOG_HEIGHT,
         )
-        live_shell.grid(row=6, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
+        live_shell.grid(row=5, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
         live_shell.grid_propagate(False)
         live_shell.columnconfigure(0, weight=1)
         live_shell.rowconfigure(0, weight=1)
@@ -690,9 +610,11 @@ class KiraPatchApp:
             relief="flat",
             highlightthickness=0,
             bd=0,
+            padx=8,
+            pady=8,
             font=("Consolas", 9),
         )
-        self.log_text.grid(row=0, column=0, sticky="nsew")
+        self.log_text.grid(row=0, column=0, sticky="nsew", padx=(8, 0), pady=8)
 
         live_scroll = self._make_scrollbar(live_shell, self.log_text.yview)
         live_scroll.grid(row=0, column=1, sticky="ns")
@@ -710,7 +632,7 @@ class KiraPatchApp:
         status.grid(row=2, column=0, sticky="ew", pady=(10, 0))
 
     def _build_titlebar(self, parent: tk.Misc) -> tk.Frame:
-        titlebar = tk.Frame(parent, bg=COLORS["titlebar"], height=32)
+        titlebar = tk.Frame(parent, bg=COLORS["titlebar"], height=36)
         titlebar.grid_propagate(False)
         titlebar.columnconfigure(0, weight=1)
         titlebar.rowconfigure(0, weight=1)
@@ -720,28 +642,16 @@ class KiraPatchApp:
             text="KiraPatch",
             bg=COLORS["titlebar"],
             fg=COLORS["text"],
-            font=("Segoe UI Semibold", 10),
+            font=("Segoe UI Semibold", 9),
         )
-        title_label.grid(row=0, column=0, sticky="w", padx=(12, 0))
+        title_label.grid(row=0, column=0, sticky="w", padx=(12, 0), pady=(1, 0))
 
         controls = tk.Frame(titlebar, bg=COLORS["titlebar"])
-        controls.grid(row=0, column=1, sticky="e", padx=(0, 8), pady=6)
-        controls.columnconfigure(0, uniform="title_buttons")
-        controls.columnconfigure(1, uniform="title_buttons")
+        controls.grid(row=0, column=1, sticky="e", padx=(0, 8), pady=5)
 
-        minimize_button = TitlebarIconButton(
-            controls,
-            "minimize",
-            self._minimize_window,
-            hover_fill=COLORS["title_button_hover"],
-        )
+        minimize_button = self._make_titlebar_button(controls, "-", self._minimize_window, COLORS["title_button_hover"])
         minimize_button.grid(row=0, column=0, padx=(0, 4))
-        close_button = TitlebarIconButton(
-            controls,
-            "close",
-            self._on_close,
-            hover_fill=COLORS["title_close_hover"],
-        )
+        close_button = self._make_titlebar_button(controls, "x", self._on_close, COLORS["title_close_hover"])
         close_button.grid(row=0, column=1)
 
         for widget in (titlebar, title_label):
@@ -749,6 +659,26 @@ class KiraPatchApp:
             widget.bind("<B1-Motion>", self._drag_window, add="+")
 
         return titlebar
+
+    def _make_titlebar_button(self, parent: tk.Misc, text: str, command: object, hover_bg: str) -> tk.Button:
+        return tk.Button(
+            parent,
+            text=text,
+            command=command,
+            width=3,
+            bg=COLORS["titlebar"],
+            fg=COLORS["text"],
+            activebackground=hover_bg,
+            activeforeground=COLORS["text"],
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            padx=0,
+            pady=1,
+            cursor="hand2",
+            takefocus=0,
+            font=("Segoe UI Semibold", 9),
+        )
 
     def _make_card(self, parent: tk.Misc) -> tk.Frame:
         return tk.Frame(
