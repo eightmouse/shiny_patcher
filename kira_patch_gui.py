@@ -238,8 +238,8 @@ class TitlebarIconButton(tk.Canvas):
     def __init__(self, parent: tk.Misc, kind: str, command: object, *, hover_fill: str) -> None:
         super().__init__(
             parent,
-            width=42,
-            height=24,
+            width=30,
+            height=20,
             bg=COLORS["titlebar"],
             highlightthickness=0,
             bd=0,
@@ -259,14 +259,14 @@ class TitlebarIconButton(tk.Canvas):
 
     def _redraw(self, _event: tk.Event | None = None) -> None:
         self.delete("all")
-        width = max(self.winfo_width(), 42)
-        height = max(self.winfo_height(), 24)
-        self._rounded_rect(0, 0, width, height, 9, fill=self._fill)
+        width = max(self.winfo_width(), 30)
+        height = max(self.winfo_height(), 20)
+        self._rounded_rect(0, 0, width, height, 7, fill=self._fill)
         if self._kind == "minimize":
-            self.create_line(width / 2 - 7, height / 2 + 3, width / 2 + 7, height / 2 + 3, fill=COLORS["text"], width=2)
+            self.create_line(width / 2 - 5, height / 2 + 2, width / 2 + 5, height / 2 + 2, fill=COLORS["text"], width=2)
         else:
-            self.create_line(width / 2 - 6, height / 2 - 6, width / 2 + 6, height / 2 + 6, fill=COLORS["text"], width=2)
-            self.create_line(width / 2 + 6, height / 2 - 6, width / 2 - 6, height / 2 + 6, fill=COLORS["text"], width=2)
+            self.create_line(width / 2 - 4, height / 2 - 4, width / 2 + 4, height / 2 + 4, fill=COLORS["text"], width=2)
+            self.create_line(width / 2 + 4, height / 2 - 4, width / 2 - 4, height / 2 + 4, fill=COLORS["text"], width=2)
 
     def _rounded_rect(self, x1: float, y1: float, x2: float, y2: float, radius: float, *, fill: str) -> None:
         radius = max(1.0, min(radius, (x2 - x1) / 2.0, (y2 - y1) / 2.0))
@@ -469,10 +469,38 @@ class KiraPatchApp:
         container = tk.Frame(body, bg=COLORS["bg"], padx=16, pady=16)
         container.grid(row=0, column=0, sticky="nsew")
         container.columnconfigure(0, weight=1)
-        container.rowconfigure(0, weight=1)
+        container.rowconfigure(1, weight=1)
+
+        header = self._make_card(container)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header.columnconfigure(1, weight=1)
+
+        if self._logo_image is not None:
+            tk.Label(
+                header,
+                image=self._logo_image,
+                bg=COLORS["card"],
+            ).grid(row=0, column=0, rowspan=2, sticky="nw", padx=(0, 12), pady=(2, 0))
+
+        tk.Label(
+            header,
+            text="KiraPatch",
+            bg=COLORS["card"],
+            fg=COLORS["text"],
+            font=("Segoe UI Semibold", 16),
+        ).grid(row=0, column=1, sticky="w")
+        tk.Label(
+            header,
+            text="Gen3 shiny patcher with canonical legal rerolls.\nPatch clean ROMs, keep legal shinies, and keep the flow simple.",
+            bg=COLORS["card"],
+            fg=COLORS["muted"],
+            justify="left",
+            wraplength=760,
+            font=("Segoe UI", 10),
+        ).grid(row=1, column=1, sticky="w", pady=(4, 0))
 
         panels = tk.Frame(container, bg=COLORS["bg"])
-        panels.grid(row=0, column=0, sticky="nsew")
+        panels.grid(row=1, column=0, sticky="nsew")
         panels.columnconfigure(0, weight=1, uniform="panel")
         panels.columnconfigure(1, weight=1, uniform="panel")
         panels.rowconfigure(0, weight=1)
@@ -679,41 +707,44 @@ class KiraPatchApp:
             justify="left",
             font=("Segoe UI", 9),
         )
-        status.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        status.grid(row=2, column=0, sticky="ew", pady=(10, 0))
 
     def _build_titlebar(self, parent: tk.Misc) -> tk.Frame:
-        titlebar = tk.Frame(parent, bg=COLORS["titlebar"], height=40)
+        titlebar = tk.Frame(parent, bg=COLORS["titlebar"], height=32)
         titlebar.grid_propagate(False)
-        titlebar.columnconfigure(1, weight=1)
+        titlebar.columnconfigure(0, weight=1)
         titlebar.rowconfigure(0, weight=1)
-
-        if self._logo_image is not None:
-            icon_label = tk.Label(titlebar, image=self._logo_image, bg=COLORS["titlebar"])
-            icon_label.grid(row=0, column=0, sticky="w", padx=(12, 8), pady=4)
-        else:
-            icon_label = tk.Label(titlebar, text="", bg=COLORS["titlebar"], width=2)
-            icon_label.grid(row=0, column=0, sticky="w", padx=(12, 8), pady=4)
 
         title_label = tk.Label(
             titlebar,
             text="KiraPatch",
             bg=COLORS["titlebar"],
             fg=COLORS["text"],
-            font=("Segoe UI Semibold", 11),
+            font=("Segoe UI Semibold", 10),
         )
-        title_label.grid(row=0, column=1, sticky="w")
+        title_label.grid(row=0, column=0, sticky="w", padx=(12, 0))
 
         controls = tk.Frame(titlebar, bg=COLORS["titlebar"])
-        controls.grid(row=0, column=2, sticky="e", padx=(0, 8), pady=8)
+        controls.grid(row=0, column=1, sticky="e", padx=(0, 8), pady=6)
         controls.columnconfigure(0, uniform="title_buttons")
         controls.columnconfigure(1, uniform="title_buttons")
 
-        minimize_button = TitlebarIconButton(controls, "minimize", self._minimize_window, hover_fill=COLORS["title_button_hover"])
+        minimize_button = TitlebarIconButton(
+            controls,
+            "minimize",
+            self._minimize_window,
+            hover_fill=COLORS["title_button_hover"],
+        )
         minimize_button.grid(row=0, column=0, padx=(0, 4))
-        close_button = TitlebarIconButton(controls, "close", self._on_close, hover_fill=COLORS["title_close_hover"])
+        close_button = TitlebarIconButton(
+            controls,
+            "close",
+            self._on_close,
+            hover_fill=COLORS["title_close_hover"],
+        )
         close_button.grid(row=0, column=1)
 
-        for widget in (titlebar, icon_label, title_label):
+        for widget in (titlebar, title_label):
             widget.bind("<ButtonPress-1>", self._start_window_drag, add="+")
             widget.bind("<B1-Motion>", self._drag_window, add="+")
 
