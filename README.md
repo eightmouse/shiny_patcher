@@ -57,9 +57,11 @@ No. In `auto` or `canonical`, the shinies are real shinies, not visual-only shin
 If the game shows the Pokemon as shiny, save editors like PKHeX should also see it as shiny.
 
 ## Are They Legal?
-Yes, that is the point of canonical mode.
+Under current standard PKHeX checks on supported vanilla ROMs, that is the point of canonical mode.
 
-In `auto`, `canonical`, or `reroll`, KiraPatch aims to keep the generated Pokemon legal by using canonical rerolls instead of a fake visual threshold patch. On supported ROMs, starters, wild encounters, and the tested static or gift paths are intended to remain PKHeX-legal.
+In `auto`, `canonical`, or `reroll`, KiraPatch aims to keep the generated Pokemon PKHeX-legal by using canonical rerolls instead of a fake visual threshold patch. On supported ROMs, starters, wild encounters, and the tested static or gift paths are intended to remain PKHeX-legal.
+
+That is not the same thing as proving the Pokemon are indistinguishable from untouched vanilla RNG history under deep trace analysis. KiraPatch is designed to avoid visual-only fake shinies and broken writes, while keeping results clean under current standard legality checks.
 
 If legality matters, use:
 - `auto`
