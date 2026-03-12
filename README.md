@@ -6,6 +6,13 @@
 
 # KiraPatch
 
+> [!WARNING]
+> Current status: starter-path hardening and real `.sav`-based odds validation are still in progress for the supported Gen 3 ROMs.
+>
+> The current public release may still show legality or freeze issues at aggressive odds. Very high odds like `1/2` are not currently considered stable or validated.
+>
+> A stricter update is being tested before the next release.
+
 ## Disclaimer
 KiraPatch is for educational and archival use.
 
