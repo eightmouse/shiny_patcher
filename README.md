@@ -7,11 +7,11 @@
 # KiraPatch
 
 > [!WARNING]
-> Current status: starter-path hardening and real `.sav`-based odds validation are still in progress for the supported Gen 3 ROMs.
+> Current status: I have the `1/64` starter base path testing clean locally across all 5 supported vanilla Gen 3 games on a real `.sav` + reset-based runner.
 >
-> The current public release may still show legality or freeze issues at aggressive odds. Very high odds like `1/2` are not currently considered stable or validated.
+> I am still finishing `1/64` shiny-hit validation and freeze hardening before the next release, because I do not want to ship another half-finished update. The current public `2.0.0` build may still show legality or freeze issues.
 >
-> A stricter update is being tested before the next release.
+> Right now, I treat `1/64` as the hardening target, `1/128` and `1/256` as the safer public choices, and `1/32` or lower as experimental. Wild, static, gift, and egg hardening comes after the `1/64` starter shiny gate.
 
 ## Disclaimer
 KiraPatch is for educational and archival use.
@@ -52,8 +52,9 @@ That means:
 - it always writes a new output ROM and does not overwrite the input ROM
 
 Important note about high rates:
-- `1/16` works, but it can cause noticeable pauses because canonical rerolls are expensive
-- `1/128` or `1/256` are much smoother for normal play
+- `1/64` is the current hardening target for the next stricter release
+- `1/128` or `1/256` are the safer public choices while hardening continues
+- `1/32` and lower are currently experimental and may freeze or fail legality checks
 
 Legacy modes:
 - `native` and `legacy` are the older threshold-style patch modes
@@ -67,7 +68,7 @@ If the game shows the Pokemon as shiny, save editors like PKHeX should also see 
 ## Are They Legal?
 Under current standard PKHeX checks on supported vanilla ROMs, that is the point of canonical mode.
 
-In `auto`, `canonical`, or `reroll`, KiraPatch aims to keep the generated Pokemon PKHeX-legal by using canonical rerolls instead of a fake visual threshold patch. On supported ROMs, starters, wild encounters, and the tested static or gift paths are intended to remain PKHeX-legal.
+In `auto`, `canonical`, or `reroll`, KiraPatch aims to keep the generated Pokemon PKHeX-clean under current desktop checks by using canonical rerolls instead of a fake visual threshold patch. Current local hardening work has the `1/64` starter base path clean across all 5 supported games on a real `.sav` + reset-based runner; shiny-hit validation at `1/64` is still being finished before the next release. Wild, static, gift, and egg paths are being tightened separately.
 
 That is not the same thing as proving the Pokemon are indistinguishable from untouched vanilla RNG history under deep trace analysis. KiraPatch is designed to avoid visual-only fake shinies and broken writes, while keeping results clean under current standard legality checks.
 
@@ -90,8 +91,9 @@ The EXE is now the main user-facing launcher. It opens a compact GUI where you c
 - choose the shiny odds you want
 
 Recommended settings:
-- `odds=128` or `odds=256` for smoother gameplay
-- `odds=16` if you want aggressive testing and do not mind freezes
+- `odds=128` or `odds=256` for the current public build
+- `odds=64` as the current hardening target for the next stricter release
+- `odds=32` and lower only if you are explicitly testing experimental aggressive rates
 
 Output naming from the EXE:
 - `<input_stem>.shiny_1inN.gba`
@@ -137,7 +139,7 @@ python shiny_patcher.py
 ## End
 KiraPatch is built around one goal: higher shiny odds in Gen 3 without fake shinies, checksum corruption, or PKHeX legality problems.
 
-Start with `auto` mode on a clean ROM, pick a sane odds value like `1/128` or `1/256`, and patch a fresh copy.
+Start with `auto` mode on a clean ROM. For the current public build, `1/128` or `1/256` are the safer choices while `1/64` is being finished for the next stricter release.
 
 ## License
 Distributed under the MIT License. See `LICENSE` for more information.
